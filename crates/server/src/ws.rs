@@ -12,12 +12,16 @@ use crate::audit::AuditLog;
 use crate::commands;
 use crate::state::{AppState, InnerState};
 
+const BROADCAST_CHANNEL_CAPACITY: usize = 2048;
+const BROADCAST_INTERVAL_MS: u64 = 100;
+const MAX_COMMANDS_PER_SEC: usize = 10;
+
 /// Broadcaster for server messages to all connected clients
 pub type Broadcaster = broadcast::Sender<String>;
 
 /// Create a new broadcaster
 pub fn new_broadcaster() -> Broadcaster {
-    let (tx, _) = broadcast::channel(256);
+    let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
     tx
 }
 
@@ -47,6 +51,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
             sensitivities: d.config.sensitivities.clone(),
             stats: d.buffer.statistics(),
             connected: d.connected,
+            last_data_time: d.last_data_time,
         })
         .collect();
     ServerMessage::Init {
@@ -59,7 +64,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
 /// Spawn the periodic chart data broadcast task (10 Hz)
 pub fn spawn_chart_broadcaster(state: AppState, broadcaster: Broadcaster) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(BROADCAST_INTERVAL_MS));
         loop {
             interval.tick().await;
             let state_read = state.read().await;
@@ -120,8 +125,20 @@ pub async fn handle_ws(
     let broadcaster_clone = broadcaster.clone();
     let audit_clone = audit.clone();
     let mut recv_task = tokio::spawn(async move {
+        let mut command_times: std::collections::VecDeque<std::time::Instant> =
+            std::collections::VecDeque::new();
         while let Some(Ok(msg)) = ws_rx.next().await {
             if let Message::Text(text) = msg {
+                // Rate limit: max 10 commands per second
+                let now = std::time::Instant::now();
+                command_times
+                    .retain(|t| now.duration_since(*t) < std::time::Duration::from_secs(1));
+                if command_times.len() >= MAX_COMMANDS_PER_SEC {
+                    warn!("Client rate limited — dropping command");
+                    continue;
+                }
+                command_times.push_back(now);
+
                 match serde_json::from_str::<ClientMessage>(&text) {
                     Ok(client_msg) => {
                         commands::handle_command(

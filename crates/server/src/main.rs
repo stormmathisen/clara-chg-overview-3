@@ -17,7 +17,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
-use tracing::info;
+use tracing::{info, warn};
+
+const PERSIST_INTERVAL_SECS: u64 = 30;
+const WATCHDOG_INTERVAL_SECS: u64 = 10;
+const WATCHDOG_STALE_SECS: f64 = 60.0;
+const DEFAULT_PORT: u16 = 49195;
+const MAX_WS_MESSAGE_SIZE: usize = 64 * 1024;
 
 #[derive(Clone)]
 struct ServerState {
@@ -50,6 +56,20 @@ async fn main() -> anyhow::Result<()> {
 
     config::apply_epics_env(&network_config, virtual_mode);
 
+    // Check caput availability
+    match tokio::process::Command::new("which")
+        .arg("caput")
+        .output()
+        .await
+    {
+        Ok(output) if output.status.success() => {
+            info!("caput command found in PATH");
+        }
+        _ => {
+            warn!("caput not found in PATH — EPICS write commands will fail");
+        }
+    }
+
     let persisted = PersistedState::load(&state_path);
     let buffer_size = persisted.buffer_size;
 
@@ -63,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
                 buffer: RollingBuffer::new(buffer_size),
                 current_sensitivity: sensitivity,
                 connected: false,
+                last_data_time: 0.0,
             }
         })
         .collect();
@@ -91,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
             if let Some(device) = s.devices.get_mut(update.device_index) {
                 device.buffer.push(update.timestamp, update.value);
                 device.connected = true;
+                device.last_data_time = update.timestamp;
             }
         }
     });
@@ -98,11 +120,34 @@ async fn main() -> anyhow::Result<()> {
     let broadcaster = ws::new_broadcaster();
     ws::spawn_chart_broadcaster(app_state.clone(), broadcaster.clone());
 
+    // Watchdog: mark devices with no data for 60s as disconnected
+    let state_for_watchdog = app_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(WATCHDOG_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            let mut s = state_for_watchdog.write().await;
+            for device in &mut s.devices {
+                if device.connected
+                    && device.last_data_time > 0.0
+                    && (now - device.last_data_time) > WATCHDOG_STALE_SECS
+                {
+                    warn!("[{}] No data for 60s, marking disconnected", device.name);
+                    device.connected = false;
+                }
+            }
+        }
+    });
+
     // Periodic state persistence (every 30s)
     let state_for_persist = app_state.clone();
     let state_path_clone = state_path.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(PERSIST_INTERVAL_SECS));
         loop {
             interval.tick().await;
             let s = state_for_persist.read().await;
@@ -138,7 +183,7 @@ async fn main() -> anyhow::Result<()> {
     let port: u16 = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(49195);
+        .unwrap_or(DEFAULT_PORT);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     info!("Listening on http://0.0.0.0:{port}");
@@ -151,5 +196,6 @@ async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<ServerState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| ws::handle_ws(socket, state.app, state.broadcaster, state.audit))
+    ws.max_message_size(MAX_WS_MESSAGE_SIZE)
+        .on_upgrade(move |socket| ws::handle_ws(socket, state.app, state.broadcaster, state.audit))
 }

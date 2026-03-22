@@ -39,6 +39,7 @@ FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         epics-base \
     && rm -rf /var/lib/apt/lists/*
 
@@ -46,11 +47,17 @@ RUN apt-get update \
 # and caput calls will fail gracefully with logged errors.
 RUN which caput 2>/dev/null || true
 
+# Run as non-root user
+RUN useradd -r -s /usr/sbin/nologin appuser
+
 WORKDIR /app
 
 COPY --from=builder /build/target/release/server /app/server
 COPY --from=builder /build/frontend_dist/ /app/frontend_dist/
 COPY config/ /app/config/
+
+RUN chown -R appuser:appuser /app
+USER appuser
 
 ENV PORT=49195
 ENV FRONTEND_DIR=/app/frontend_dist
@@ -58,5 +65,8 @@ ENV CHARGE_CONFIG=/app/config/charge_devices.yaml
 ENV NETWORK_CONFIG=/app/config/network.yaml
 
 EXPOSE 49195
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:49195/ || exit 1
 
 ENTRYPOINT ["/app/server"]
