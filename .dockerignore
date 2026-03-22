@@ -1,0 +1,6 @@
+target/
+frontend_dist/
+state.json
+*.swp
+*.swo
+.env
