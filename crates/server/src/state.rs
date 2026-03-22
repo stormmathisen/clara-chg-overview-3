@@ -3,6 +3,7 @@ use shared::messages::Stats;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::warn;
 
 /// Rolling buffer of (timestamp_secs, value) pairs with fixed capacity
 #[derive(Clone, Debug)]
@@ -37,18 +38,23 @@ impl RollingBuffer {
         if self.data.is_empty() {
             return Stats::default();
         }
-        let values: Vec<f64> = self.data.iter().map(|p| p[1]).collect();
-        let n = values.len() as f64;
-        let mean = values.iter().sum::<f64>() / n;
-        let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let rmsd = (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
-        Stats {
-            mean,
-            min,
-            max,
-            rmsd,
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        let n = self.data.len() as f64;
+
+        for p in &self.data {
+            let v = p[1];
+            sum += v;
+            sum_sq += v * v;
+            if v < min { min = v; }
+            if v > max { max = v; }
         }
+
+        let mean = sum / n;
+        let rmsd = ((sum_sq / n) - (mean * mean)).max(0.0).sqrt();
+        Stats { mean, min, max, rmsd }
     }
 
     pub fn as_points(&self) -> Vec<[f64; 2]> {
@@ -71,6 +77,7 @@ pub struct DeviceState {
     pub buffer: RollingBuffer,
     pub current_sensitivity: usize,
     pub connected: bool,
+    pub last_data_time: f64,
 }
 
 /// Global application state, shared across all tasks
@@ -93,19 +100,155 @@ pub struct PersistedState {
 
 impl PersistedState {
     pub fn load(path: &std::path::Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(Self {
-                buffer_size: 1000,
-                sensitivities: std::collections::HashMap::new(),
-                device_order: Vec::new(),
-            })
+        match std::fs::read_to_string(path) {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(state) => state,
+                Err(e) => {
+                    let backup = path.with_extension("json.corrupt");
+                    let _ = std::fs::rename(path, &backup);
+                    warn!(
+                        "Corrupt state file (backed up to {}): {e}",
+                        backup.display()
+                    );
+                    Self::default_state()
+                }
+            },
+            Err(_) => Self::default_state(),
+        }
     }
 
     pub fn save(&self, path: &std::path::Path) {
         if let Ok(json) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, json);
+            let tmp = path.with_extension("json.tmp");
+            if std::fs::write(&tmp, &json).is_ok() {
+                let _ = std::fs::rename(&tmp, path);
+            }
         }
+    }
+
+    fn default_state() -> Self {
+        Self {
+            buffer_size: 1000,
+            sensitivities: std::collections::HashMap::new(),
+            device_order: Vec::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rolling_buffer_push_and_capacity() {
+        let mut buf = RollingBuffer::new(3);
+        buf.push(1.0, 10.0);
+        buf.push(2.0, 20.0);
+        buf.push(3.0, 30.0);
+        assert_eq!(buf.len(), 3);
+
+        // Exceeding capacity drops oldest
+        buf.push(4.0, 40.0);
+        assert_eq!(buf.len(), 3);
+        let points = buf.as_points();
+        assert_eq!(points[0], [2.0, 20.0]);
+        assert_eq!(points[2], [4.0, 40.0]);
+    }
+
+    #[test]
+    fn rolling_buffer_set_capacity() {
+        let mut buf = RollingBuffer::new(5);
+        for i in 0..5 {
+            buf.push(i as f64, i as f64 * 10.0);
+        }
+        assert_eq!(buf.len(), 5);
+
+        buf.set_capacity(2);
+        assert_eq!(buf.len(), 2);
+        let points = buf.as_points();
+        assert_eq!(points[0], [3.0, 30.0]);
+        assert_eq!(points[1], [4.0, 40.0]);
+    }
+
+    #[test]
+    fn rolling_buffer_statistics_empty() {
+        let buf = RollingBuffer::new(10);
+        let stats = buf.statistics();
+        assert_eq!(stats.mean, 0.0);
+        assert_eq!(stats.min, 0.0);
+        assert_eq!(stats.max, 0.0);
+        assert_eq!(stats.rmsd, 0.0);
+    }
+
+    #[test]
+    fn rolling_buffer_statistics_values() {
+        let mut buf = RollingBuffer::new(100);
+        buf.push(1.0, 10.0);
+        buf.push(2.0, 20.0);
+        buf.push(3.0, 30.0);
+        let stats = buf.statistics();
+        assert!((stats.mean - 20.0).abs() < 1e-10);
+        assert!((stats.min - 10.0).abs() < 1e-10);
+        assert!((stats.max - 30.0).abs() < 1e-10);
+        // RMSD = sqrt(((10-20)^2 + (20-20)^2 + (30-20)^2) / 3) = sqrt(200/3) ≈ 8.165
+        assert!((stats.rmsd - (200.0_f64 / 3.0).sqrt()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rolling_buffer_statistics_constant() {
+        let mut buf = RollingBuffer::new(100);
+        for i in 0..50 {
+            buf.push(i as f64, 42.0);
+        }
+        let stats = buf.statistics();
+        assert!((stats.mean - 42.0).abs() < 1e-10);
+        assert!((stats.min - 42.0).abs() < 1e-10);
+        assert!((stats.max - 42.0).abs() < 1e-10);
+        assert!(stats.rmsd < 1e-10);
+    }
+
+    #[test]
+    fn persisted_state_save_load_roundtrip() {
+        let dir = std::env::temp_dir().join("clara_test_state");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_state.json");
+
+        let state = PersistedState {
+            buffer_size: 500,
+            sensitivities: [("dev1".to_string(), 2)].into_iter().collect(),
+            device_order: vec!["dev1".to_string(), "dev2".to_string()],
+        };
+        state.save(&path);
+
+        let loaded = PersistedState::load(&path);
+        assert_eq!(loaded.buffer_size, 500);
+        assert_eq!(loaded.sensitivities.get("dev1"), Some(&2));
+        assert_eq!(loaded.device_order, vec!["dev1", "dev2"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persisted_state_load_missing_file() {
+        let path = std::path::Path::new("/tmp/clara_test_nonexistent_state.json");
+        let loaded = PersistedState::load(path);
+        assert_eq!(loaded.buffer_size, 1000); // default
+    }
+
+    #[test]
+    fn persisted_state_load_corrupt_file() {
+        let dir = std::env::temp_dir().join("clara_test_corrupt");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("corrupt_state.json");
+
+        std::fs::write(&path, "this is not valid json!!!").unwrap();
+        let loaded = PersistedState::load(&path);
+        assert_eq!(loaded.buffer_size, 1000); // default
+
+        // Backup file should exist
+        let backup = path.with_extension("json.corrupt");
+        assert!(backup.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -12,16 +12,28 @@ pub fn start() -> Result<(), JsValue> {
     let web_options = eframe::WebOptions::default();
 
     wasm_bindgen_futures::spawn_local(async {
-        let document = web_sys::window()
-            .expect("No window")
-            .document()
-            .expect("No document");
+        let Some(window) = web_sys::window() else {
+            log::error!("No window object available");
+            return;
+        };
+        let Some(document) = window.document() else {
+            log::error!("No document object available");
+            return;
+        };
 
-        let canvas = document
+        let Some(canvas) = document
             .get_element_by_id("the_canvas_id")
-            .expect("No canvas element")
-            .dyn_into::<web_sys::HtmlCanvasElement>()
-            .expect("Not a canvas element");
+            .and_then(|el| el.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+        else {
+            log::error!("Canvas element 'the_canvas_id' not found");
+            if let Some(body) = document.body() {
+                body.set_inner_html(
+                    "<h2 style='color:red;padding:2em'>Error: Canvas element not found. \
+                     Check index.html has &lt;canvas id=\"the_canvas_id\"&gt;</h2>",
+                );
+            }
+            return;
+        };
 
         if let Err(e) = eframe::WebRunner::new()
             .start(
