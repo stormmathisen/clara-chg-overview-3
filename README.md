@@ -29,12 +29,18 @@ diagnostics via EPICS Channel Access.
   config parsing, used by both server and frontend.
 
 State (selected sensitivities, buffer size) is persisted to `state.json` every
-30 seconds and restored on startup.
+30 seconds using atomic writes (temp file + rename) and restored on startup.
+Corrupt state files are backed up and defaults are used.
 
 EPICS monitors are persistent — if a connection drops, each PV subscription
-automatically reconnects with exponential backoff.
+automatically reconnects with exponential backoff. A watchdog detects silent
+connection drops (no data for 60s) and marks devices as disconnected.
 
-All client connections and commands are logged to an append-only audit log file.
+All client connections and commands are logged to an append-only audit log file
+in JSON-lines format, with automatic rotation at 100 MB.
+
+WebSocket connections are rate-limited (10 commands/sec) with a 64 KB message
+size cap.
 
 ## Prerequisites
 
@@ -133,10 +139,21 @@ docker run -p 49195:49195 \
 - **Freeze stats** button to snapshot current statistics for recording
 - **Device filtering** by type (WCM / DQ / FCUP checkboxes) and individual device toggles
 - **Device reordering** via up/down buttons in the controls panel
+- **Last seen** timestamp per device in the controls panel
 - **Sensitivity selection** dynamically from config (supports any FB level)
 - **Buffer size** control to adjust rolling window length
-- **Notifications** for command results and errors
-- **Audit logging** of all client connections and commands
+- **Notifications** for command results and errors (auto-dismiss after 10s, errors persist)
+- **Audit logging** of all client connections and commands (JSON-lines format)
+
+## Testing
+
+```bash
+cargo test --workspace
+```
+
+Tests cover: rolling buffer operations, statistics correctness, state
+persistence round-trips, corrupt file recovery, config validation, and message
+serialization compatibility.
 
 ## License
 
