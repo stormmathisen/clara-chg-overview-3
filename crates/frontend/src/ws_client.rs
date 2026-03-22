@@ -2,12 +2,17 @@ use ewebsock::{WsEvent, WsMessage, WsReceiver, WsSender};
 use shared::messages::{ClientMessage, ServerMessage};
 use std::collections::VecDeque;
 
+const INITIAL_RECONNECT_DELAY: u32 = 10; // ~1s at 10Hz repaint
+const MAX_RECONNECT_DELAY: u32 = 300; // ~30s at 10Hz repaint
+
 pub struct WsClient {
     sender: Option<WsSender>,
     receiver: Option<WsReceiver>,
     pub incoming: VecDeque<ServerMessage>,
     url: String,
     connected: bool,
+    reconnect_cooldown: u32,
+    reconnect_delay: u32,
 }
 
 impl WsClient {
@@ -18,6 +23,8 @@ impl WsClient {
             incoming: VecDeque::new(),
             url: String::new(),
             connected: false,
+            reconnect_cooldown: 0,
+            reconnect_delay: INITIAL_RECONNECT_DELAY,
         }
     }
 
@@ -56,6 +63,8 @@ impl WsClient {
                     WsEvent::Opened => {
                         log::info!("WebSocket connected");
                         self.connected = true;
+                        self.reconnect_delay = INITIAL_RECONNECT_DELAY;
+                        self.reconnect_cooldown = 0;
                     }
                     WsEvent::Closed => {
                         log::warn!("WebSocket closed");
@@ -76,9 +85,18 @@ impl WsClient {
             self.receiver = None;
         }
 
-        // Auto-reconnect
+        // Auto-reconnect with exponential backoff
         if !self.connected && self.sender.is_none() && !self.url.is_empty() {
-            self.connect(&self.url.clone());
+            if self.reconnect_cooldown > 0 {
+                self.reconnect_cooldown -= 1;
+            } else {
+                self.connect(&self.url.clone());
+                if !self.connected {
+                    self.reconnect_cooldown = self.reconnect_delay;
+                    self.reconnect_delay =
+                        (self.reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                }
+            }
         }
     }
 

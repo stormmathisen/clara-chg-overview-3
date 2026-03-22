@@ -1,5 +1,6 @@
 use shared::messages::{
-    ChartSnapshot, ClientMessage, DeviceStatus, DeviceType, Notification, ServerMessage, Stats,
+    ChartSnapshot, ClientMessage, DeviceStatus, DeviceType, Notification, NotificationLevel,
+    ServerMessage, Stats,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -41,13 +42,14 @@ pub struct ChargeOverviewApp {
     ws: WsClient,
     devices: Vec<DeviceStatus>,
     snapshots: Vec<ChartSnapshot>,
-    notifications: VecDeque<Notification>,
+    notifications: VecDeque<(Notification, u64)>,
     buffer_size: usize,
     pub buffer_size_str: String,
     connected: bool,
     pub filter: DisplayFilter,
     pub device_order: Vec<String>,
     pub frozen_stats: Option<Vec<(String, Stats)>>,
+    frame_count: u64,
 }
 
 impl ChargeOverviewApp {
@@ -69,6 +71,7 @@ impl ChargeOverviewApp {
             filter: DisplayFilter::default(),
             device_order: Vec::new(),
             frozen_stats: None,
+            frame_count: 0,
         }
     }
 
@@ -112,7 +115,7 @@ impl ChargeOverviewApp {
                     self.device_order = order;
                 }
                 ServerMessage::Notify(n) => {
-                    self.notifications.push_back(n);
+                    self.notifications.push_back((n, self.frame_count));
                     if self.notifications.len() > 50 {
                         self.notifications.pop_front();
                     }
@@ -125,6 +128,13 @@ impl ChargeOverviewApp {
 impl eframe::App for ChargeOverviewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_messages();
+        self.frame_count += 1;
+
+        // Auto-dismiss non-error notifications after ~10s (100 frames at 10Hz)
+        let fc = self.frame_count;
+        self.notifications.retain(|(n, received_frame)| {
+            matches!(n.level, NotificationLevel::Error) || fc - received_frame < 100
+        });
 
         let mut out_msgs: Vec<ClientMessage> = Vec::new();
 
@@ -147,12 +157,12 @@ impl eframe::App for ChargeOverviewApp {
         egui::TopBottomPanel::bottom("notifications").show(ctx, |ui: &mut egui::Ui| {
             ui.horizontal(|ui: &mut egui::Ui| {
                 ui.label("Notifications:");
-                if let Some(n) = self.notifications.back() {
+                if let Some((n, _frame)) = self.notifications.back() {
                     let color = match n.level {
-                        shared::messages::NotificationLevel::Info => egui::Color32::LIGHT_BLUE,
-                        shared::messages::NotificationLevel::Success => egui::Color32::GREEN,
-                        shared::messages::NotificationLevel::Warning => egui::Color32::YELLOW,
-                        shared::messages::NotificationLevel::Error => egui::Color32::RED,
+                        NotificationLevel::Info => egui::Color32::LIGHT_BLUE,
+                        NotificationLevel::Success => egui::Color32::GREEN,
+                        NotificationLevel::Warning => egui::Color32::YELLOW,
+                        NotificationLevel::Error => egui::Color32::RED,
                     };
                     ui.colored_label(color, &n.message);
                 }

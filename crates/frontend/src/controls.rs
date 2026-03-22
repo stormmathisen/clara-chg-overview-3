@@ -55,6 +55,18 @@ pub fn draw_device_controls(
                     .size(13.0),
             );
             ui.label(format!("({:?})", device.device_type));
+            if device.last_data_time > 0.0 {
+                let secs = device.last_data_time as i64;
+                let total = secs.rem_euclid(86400);
+                let h = total / 3600;
+                let m = (total % 3600) / 60;
+                let s = total % 60;
+                ui.label(
+                    egui::RichText::new(format!("Last: {h:02}:{m:02}:{s:02}"))
+                        .size(10.0)
+                        .weak(),
+                );
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui: &mut egui::Ui| {
                 if index + 1 < total {
