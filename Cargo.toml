@@ -1,0 +1,4 @@
+[workspace]
+members = ["crates/shared", "crates/server", "crates/frontend"]
+default-members = ["crates/shared", "crates/server"]
+resolver = "2"
