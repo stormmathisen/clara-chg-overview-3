@@ -1,0 +1,145 @@
+CLA-S01-DIA-WCM-01:
+  type: 'wcm'
+  digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH0'
+  ip: '192.168.114.14'
+  sensitivities: [ 3, 4 ]
+  pvs:
+    charge: 'CLA-S01-DIA-WCM-01:Q'
+    base_low: 'CLA-S01-DIA-WCM-01:base:Low'
+    base_high: 'CLA-S01-DIA-WCM-01:base:High'
+    peak_low: 'CLA-S01-DIA-WCM-01:peak:Low'
+    peak_high: 'CLA-S01-DIA-WCM-01:peak:High'
+    corrA: 'CLA-S01-DIA-WCM-01:corA'
+    corrB: 'CLA-S01-DIA-WCM-01:corB'
+  defaults:
+    charge: 0.0
+    base_low: 1025
+    base_high: 1027
+    peak_low: 1035
+    peak_high: 1037
+    corrA: [ 0.08924193978339211, 0.2733312837564284 ]
+    corrB: [ 0.0, 0.0 ]
+CLA-S01-DIA-WCM-01:DQ:
+  type: 'dq'
+  digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH0'
+  ip: '192.168.114.14'
+  sensitivities: [ 3, 4 ]
+  pvs:
+    charge: 'CLA-S01-DIA-WCM-01:DQ'
+    base_low: 'CLA-S01-DIA-WCM-01:dark:base:Low'
+    base_high: 'CLA-S01-DIA-WCM-01:dark:base:High'
+    peak_low: 'CLA-S01-DIA-WCM-01:dark:peak:Low'
+    peak_high: 'CLA-S01-DIA-WCM-01:dark:peak:High'
+    DQcal: 'CLA-S01-DIA-WCM-01:DQcal'
+  defaults:
+    charge: 0.0
+    base_low: 100
+    base_high: 440
+    peak_low: 300
+    peak_high: 1026
+    DQcal: [ 0.00162361776117411, 0.0057216759 ]
+CLA-SP1-DIA-FCUP-01:
+  type: 'fcup'
+  digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH1'
+  ip: '192.168.114.10'
+  sensitivities: [ 3, 4 ]
+  pvs:
+    charge: 'CLA-SP1-DIA-FCUP-01:Q'
+    base_low: 'CLA-SP1-DIA-FCUP-01:base:Low'
+    base_high: 'CLA-SP1-DIA-FCUP-01:base:High'
+    peak_low: 'CLA-SP1-DIA-FCUP-01:peak:Low'
+    peak_high: 'CLA-SP1-DIA-FCUP-01:peak:High'
+    corrA: 'CLA-SP1-DIA-FCUP-01:corA'
+    corrB: 'CLA-SP1-DIA-FCUP-01:corB'
+  defaults:
+    charge: 0.0
+    base_low: 200
+    base_high: 800
+    peak_low: 1040
+    peak_high: 1046
+    corrA: [ -0.0025950308442806913, -0.009212913251858192 ]
+    corrB: [ 0.0, 0.0 ]
+CLA-SP2-DIA-FCUP-01:
+  type: 'fcup'
+  digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH0'
+  ip: '192.168.114.11'
+  sensitivities: [ 3, 4 ]
+  pvs:
+    charge: 'CLA-SP2-DIA-FCUP-01:Q'
+    base_low: 'CLA-SP2-DIA-FCUP-01:base:Low'
+    base_high: 'CLA-SP2-DIA-FCUP-01:base:High'
+    peak_low: 'CLA-SP2-DIA-FCUP-01:peak:Low'
+    peak_high: 'CLA-SP2-DIA-FCUP-01:peak:High'
+    corrA: 'CLA-SP2-DIA-FCUP-01:corA'
+    corrB: 'CLA-SP2-DIA-FCUP-01:corB'
+  defaults:
+    charge: 0.0
+    base_low: 200
+    base_high: 800
+    peak_low: 1003
+    peak_high: 1009
+    corrA: [ -0.0025377232, -0.0087183619 ]
+    corrB: [ 0.0, 0.0 ]
+CLA-SP3-DIA-FCUP-01:
+  type: 'fcup'
+  digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH1'
+  ip: '192.168.114.12'
+  sensitivities: [ 3, 4 ]
+  pvs:
+    charge: 'CLA-SP3-DIA-FCUP-01:Q'
+    base_low: 'CLA-SP3-DIA-FCUP-01:base:Low'
+    base_high: 'CLA-SP3-DIA-FCUP-01:base:High'
+    peak_low: 'CLA-SP3-DIA-FCUP-01:peak:Low'
+    peak_high: 'CLA-SP3-DIA-FCUP-01:peak:High'
+    corrA: 'CLA-SP3-DIA-FCUP-01:corA'
+    corrB: 'CLA-SP3-DIA-FCUP-01:corB'
+  defaults:
+    charge: 0.0
+    base_low: 200
+    base_high: 800
+    peak_low: 1023
+    peak_high: 1029
+    corrA: [ -0.0025585213, -0.0088201726 ]
+    corrB: [ 0.0, 0.0 ]
+CLA-S07-DIA-FCUP-01:
+  type: 'fcup'
+  digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH2'
+  ip: ''
+  sensitivities: [ 3, 4 ]
+  pvs:
+    charge: 'CLA-S07-DIA-FCUP-01:Q'
+    base_low: 'CLA-S07-DIA-FCUP-01:base:Low'
+    base_high: 'CLA-S07-DIA-FCUP-01:base:High'
+    peak_low: 'CLA-S07-DIA-FCUP-01:peak:Low'
+    peak_high: 'CLA-S07-DIA-FCUP-01:peak:High'
+    corrA: 'CLA-S07-DIA-FCUP-01:corA'
+    corrB: 'CLA-S07-DIA-FCUP-01:corB'
+  defaults:
+    charge: 0.0
+    base_low: 200
+    base_high: 800
+    peak_low: 1016
+    peak_high: 1022
+    corrA: [ -0.0026158418, -0.0089527958 ]
+    corrB: [ 0.0, 0.0 ]
+CLA-FED-DIA-FCUP-01:
+  type: 'fcup'
+  digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH6'
+  ip: '192.168.114.9'
+  sensitivities: [ 3, 4 ]
+  pvs:
+    charge: 'CLA-FED-DIA-FCUP-01:Q'
+    base_low: 'CLA-FED-DIA-FCUP-01:base:Low'
+    base_high: 'CLA-FED-DIA-FCUP-01:base:High'
+    peak_low: 'CLA-FED-DIA-FCUP-01:peak:Low'
+    peak_high: 'CLA-FED-DIA-FCUP-01:peak:High'
+    corrA: 'CLA-FED-DIA-FCUP-01:corA'
+    corrB: 'CLA-FED-DIA-FCUP-01:corB'
+  defaults:
+    charge: 0.0
+    base_low: 200
+    base_high: 800
+    peak_low: 1040
+    peak_high: 1046
+    corrA: [ -0.0026073539, -0.0083850601 ]
+    corrB: [ 0.0, 0.0 ]
