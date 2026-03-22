@@ -81,14 +81,9 @@ impl ChargeOverviewApp {
                 ServerMessage::Init {
                     devices,
                     buffer_size,
+                    device_order,
                 } => {
-                    // Initialize device order if empty or if device list changed
-                    let names: Vec<String> = devices.iter().map(|d| d.name.clone()).collect();
-                    if self.device_order.is_empty()
-                        || self.device_order.len() != names.len()
-                    {
-                        self.device_order = names;
-                    }
+                    self.device_order = device_order;
                     self.devices = devices;
                     self.buffer_size = buffer_size;
                 }
@@ -112,6 +107,9 @@ impl ChargeOverviewApp {
                 ServerMessage::BufferSizeChanged { size } => {
                     self.buffer_size = size;
                     self.buffer_size_str = size.to_string();
+                }
+                ServerMessage::DeviceOrderChanged { order } => {
+                    self.device_order = order;
                 }
                 ServerMessage::Notify(n) => {
                     self.notifications.push_back(n);
@@ -168,6 +166,7 @@ impl eframe::App for ChargeOverviewApp {
                 egui::ScrollArea::vertical().show(ui, |ui: &mut egui::Ui| {
                     controls::draw_filter_controls(ui, &self.devices, &mut self.filter);
                     ui.separator();
+                    let order_before = self.device_order.clone();
                     for i in 0..self.device_order.len() {
                         let name = &self.device_order[i];
                         if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
@@ -181,6 +180,11 @@ impl eframe::App for ChargeOverviewApp {
                             );
                             ui.add_space(4.0);
                         }
+                    }
+                    if self.device_order != order_before {
+                        out_msgs.push(ClientMessage::SetDeviceOrder {
+                            order: self.device_order.clone(),
+                        });
                     }
                 });
             });

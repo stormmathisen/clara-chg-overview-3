@@ -77,6 +77,7 @@ pub struct DeviceState {
 pub struct InnerState {
     pub devices: Vec<DeviceState>,
     pub buffer_size: usize,
+    pub device_order: Vec<String>,
 }
 
 pub type AppState = Arc<RwLock<InnerState>>;
@@ -86,6 +87,8 @@ pub type AppState = Arc<RwLock<InnerState>>;
 pub struct PersistedState {
     pub buffer_size: usize,
     pub sensitivities: std::collections::HashMap<String, usize>,
+    #[serde(default)]
+    pub device_order: Vec<String>,
 }
 
 impl PersistedState {
@@ -96,6 +99,7 @@ impl PersistedState {
             .unwrap_or(Self {
                 buffer_size: 1000,
                 sensitivities: std::collections::HashMap::new(),
+                device_order: Vec::new(),
             })
     }
 

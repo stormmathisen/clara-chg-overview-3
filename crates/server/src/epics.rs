@@ -59,6 +59,9 @@ async fn persistent_monitor(
     state: AppState,
 ) {
     let mut retry_delay = INITIAL_RETRY_DELAY;
+    // Stagger initial connection attempts to avoid thundering herd
+    let jitter = Duration::from_millis((device_index as u64 * 200) % 1000);
+    tokio::time::sleep(jitter).await;
 
     loop {
         info!("[{pv_name}] Connecting to EPICS...");
@@ -94,8 +97,12 @@ async fn run_monitor(
     pv_name: &str,
     tx: &mpsc::UnboundedSender<EpicsUpdate>,
 ) -> anyhow::Result<()> {
-    let mut client = Client::new().await?;
-    let (mut monitor, _token) = client.subscribe(pv_name).await?;
+    let mut client = tokio::time::timeout(Duration::from_secs(5), Client::new())
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout connecting to CA repeater"))??;
+    let (mut monitor, _token) = tokio::time::timeout(Duration::from_secs(5), client.subscribe(pv_name))
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout subscribing to {pv_name}"))??;
     info!("[{pv_name}] Subscribed successfully");
 
     loop {

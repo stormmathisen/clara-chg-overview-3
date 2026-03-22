@@ -70,6 +70,7 @@ pub enum ServerMessage {
     Init {
         devices: Vec<DeviceStatus>,
         buffer_size: usize,
+        device_order: Vec<String>,
     },
     /// Periodic chart data update (all devices)
     ChartData {
@@ -83,6 +84,10 @@ pub enum ServerMessage {
     /// Buffer size changed
     BufferSizeChanged {
         size: usize,
+    },
+    /// Device order changed
+    DeviceOrderChanged {
+        order: Vec<String>,
     },
     /// Notification for the UI
     Notify(Notification),
@@ -98,4 +103,5 @@ pub enum ClientMessage {
     RestoreDefaults { device: String },
     ClearCalibration,
     SetBufferSize { size: usize },
+    SetDeviceOrder { order: Vec<String> },
 }

@@ -58,12 +58,12 @@ pub fn draw_device_controls(
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui: &mut egui::Ui| {
                 if index + 1 < total {
-                    if ui.small_button("▼").clicked() {
+                    if ui.small_button("Dn").clicked() {
                         device_order.swap(index, index + 1);
                     }
                 }
                 if index > 0 {
-                    if ui.small_button("▲").clicked() {
+                    if ui.small_button("Up").clicked() {
                         device_order.swap(index, index - 1);
                     }
                 }

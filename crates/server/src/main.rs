@@ -68,9 +68,16 @@ async fn main() -> anyhow::Result<()> {
         .collect();
     devices.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let device_order = if persisted.device_order.is_empty() {
+        devices.iter().map(|d| d.name.clone()).collect()
+    } else {
+        persisted.device_order.clone()
+    };
+
     let app_state: AppState = Arc::new(RwLock::new(InnerState {
         devices,
         buffer_size,
+        device_order,
     }));
 
     // Start EPICS subscriptions
@@ -102,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
             let p = PersistedState {
                 buffer_size: s.buffer_size,
                 sensitivities: s.devices.iter().map(|d| (d.name.clone(), d.current_sensitivity)).collect(),
+                device_order: s.device_order.clone(),
             };
             drop(s);
             p.save(&state_path_clone);

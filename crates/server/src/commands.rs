@@ -37,6 +37,9 @@ pub async fn handle_command(
         ClientMessage::SetBufferSize { size } => {
             handle_set_buffer_size(size, state, broadcaster).await;
         }
+        ClientMessage::SetDeviceOrder { order } => {
+            handle_set_device_order(order, state, broadcaster).await;
+        }
     }
 }
 
@@ -316,6 +319,22 @@ async fn handle_set_buffer_size(
     }
 
     let msg = ServerMessage::BufferSizeChanged { size };
+    if let Ok(json) = serde_json::to_string(&msg) {
+        let _ = broadcaster.send(json);
+    }
+}
+
+async fn handle_set_device_order(
+    order: Vec<String>,
+    state: &AppState,
+    broadcaster: &Broadcaster,
+) {
+    {
+        let mut state_write = state.write().await;
+        state_write.device_order = order.clone();
+    }
+
+    let msg = ServerMessage::DeviceOrderChanged { order };
     if let Ok(json) = serde_json::to_string(&msg) {
         let _ = broadcaster.send(json);
     }

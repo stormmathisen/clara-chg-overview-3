@@ -52,6 +52,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
     ServerMessage::Init {
         devices,
         buffer_size: state.buffer_size,
+        device_order: state.device_order.clone(),
     }
 }
 
