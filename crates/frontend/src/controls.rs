@@ -43,12 +43,28 @@ pub fn draw_device_controls(
 ) {
     ui.group(|ui: &mut egui::Ui| {
         ui.horizontal(|ui: &mut egui::Ui| {
-            let connected_color = if device.connected {
+            let epics_color = if device.connected {
                 egui::Color32::GREEN
             } else {
                 egui::Color32::RED
             };
-            ui.colored_label(connected_color, "●");
+            let fe_color = if device.fe_alive {
+                egui::Color32::GREEN
+            } else {
+                egui::Color32::RED
+            };
+            ui.colored_label(epics_color, "E●")
+                .on_hover_text(if device.connected {
+                    "EPICS Channel Access: receiving data"
+                } else {
+                    "EPICS Channel Access: no data"
+                });
+            ui.colored_label(fe_color, "FE●")
+                .on_hover_text(if device.fe_alive {
+                    "Front-end hardware box: reachable"
+                } else {
+                    "Front-end hardware box: unreachable"
+                });
             ui.label(
                 egui::RichText::new(&device.name)
                     .strong()
@@ -70,12 +86,12 @@ pub fn draw_device_controls(
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui: &mut egui::Ui| {
                 if index + 1 < total {
-                    if ui.small_button("Dn").clicked() {
+                    if ui.small_button("Dn").on_hover_text("Move device down in display order").clicked() {
                         device_order.swap(index, index + 1);
                     }
                 }
                 if index > 0 {
-                    if ui.small_button("Up").clicked() {
+                    if ui.small_button("Up").on_hover_text("Move device up in display order").clicked() {
                         device_order.swap(index, index - 1);
                     }
                 }
@@ -100,20 +116,41 @@ pub fn draw_device_controls(
         ui.horizontal(|ui: &mut egui::Ui| {
             // Device-specific buttons
             if device.device_type == DeviceType::Wcm {
-                if ui.button("Zero WCM").clicked() {
+                if ui.button("Zero WCM")
+                    .on_hover_text("Zero the WCM offset (corrB). Beam must be OFF but RF must be ON.")
+                    .clicked()
+                {
                     out_msgs.push(ClientMessage::ZeroWCM {
                         device: device.name.clone(),
                     });
                 }
             }
 
-            if ui.button("Sweep Timing").clicked() {
+            if ui.button("Sweep Timing")
+                .on_hover_text("Sweep timing window to find optimal peak. Beam must be ON the device.")
+                .clicked()
+            {
                 out_msgs.push(ClientMessage::SweepTiming {
                     device: device.name.clone(),
                 });
             }
 
-            if ui.button("Restore Defaults").clicked() {
+            // Build defaults tooltip
+            let defaults_tip = if device.defaults.is_empty() {
+                "Restore all PV defaults for this device".to_string()
+            } else {
+                let mut lines: Vec<String> = device.defaults
+                    .iter()
+                    .filter(|(k, _)| k.as_str() != "charge")
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect();
+                lines.sort();
+                format!("Restore defaults:\n{}", lines.join("\n"))
+            };
+            if ui.button("Restore Defaults")
+                .on_hover_text(defaults_tip)
+                .clicked()
+            {
                 out_msgs.push(ClientMessage::RestoreDefaults {
                     device: device.name.clone(),
                 });
@@ -151,7 +188,14 @@ pub fn draw_global_controls(
         }
         ui.separator();
         let is_frozen = frozen_stats.is_some();
-        if ui.button(if is_frozen { "Unfreeze Stats" } else { "Freeze Stats" }).clicked() {
+        if ui.button(if is_frozen { "Unfreeze Stats" } else { "Freeze Stats" })
+            .on_hover_text(if is_frozen {
+                "Resume live statistics updates"
+            } else {
+                "Snapshot current statistics for recording"
+            })
+            .clicked()
+        {
             if is_frozen {
                 *frozen_stats = None;
             } else {
