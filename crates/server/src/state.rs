@@ -77,6 +77,7 @@ pub struct DeviceState {
     pub buffer: RollingBuffer,
     pub current_sensitivity: usize,
     pub connected: bool,
+    pub fe_alive: bool,
     pub last_data_time: f64,
 }
 

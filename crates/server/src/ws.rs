@@ -44,14 +44,22 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
     let devices: Vec<DeviceStatus> = state
         .devices
         .iter()
-        .map(|d| DeviceStatus {
-            name: d.name.clone(),
-            device_type: d.config.device_type.clone(),
-            current_sensitivity: d.current_sensitivity,
-            sensitivities: d.config.sensitivities.clone(),
-            stats: d.buffer.statistics(),
-            connected: d.connected,
-            last_data_time: d.last_data_time,
+        .map(|d| {
+            let defaults: std::collections::HashMap<String, f64> = d.config.defaults
+                .iter()
+                .map(|(k, v)| (k.clone(), v.for_sensitivity(d.current_sensitivity)))
+                .collect();
+            DeviceStatus {
+                name: d.name.clone(),
+                device_type: d.config.device_type.clone(),
+                current_sensitivity: d.current_sensitivity,
+                sensitivities: d.config.sensitivities.clone(),
+                stats: d.buffer.statistics(),
+                connected: d.connected,
+                fe_alive: d.fe_alive,
+                last_data_time: d.last_data_time,
+                defaults,
+            }
         })
         .collect();
     ServerMessage::Init {

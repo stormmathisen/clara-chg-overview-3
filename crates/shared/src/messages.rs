@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Statistics for a device's rolling buffer
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -27,7 +28,11 @@ pub struct DeviceStatus {
     pub stats: Stats,
     pub connected: bool,
     #[serde(default)]
+    pub fe_alive: bool,
+    #[serde(default)]
     pub last_data_time: f64,
+    #[serde(default)]
+    pub defaults: HashMap<String, f64>,
 }
 
 /// Basic device info sent on init
@@ -122,7 +127,9 @@ mod tests {
                 sensitivities: vec![3, 4],
                 stats: Stats::default(),
                 connected: true,
+                fe_alive: true,
                 last_data_time: 1234567890.0,
+                defaults: HashMap::new(),
             }],
             buffer_size: 1000,
             device_order: vec!["TEST-DEV".to_string()],

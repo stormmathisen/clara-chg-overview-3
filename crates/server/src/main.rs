@@ -22,6 +22,8 @@ use tracing::{info, warn};
 const PERSIST_INTERVAL_SECS: u64 = 30;
 const WATCHDOG_INTERVAL_SECS: u64 = 10;
 const WATCHDOG_STALE_SECS: f64 = 60.0;
+const PING_INTERVAL_SECS: u64 = 30;
+const PING_TIMEOUT_MS: u64 = 500;
 const DEFAULT_PORT: u16 = 49195;
 const MAX_WS_MESSAGE_SIZE: usize = 64 * 1024;
 
@@ -83,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
                 buffer: RollingBuffer::new(buffer_size),
                 current_sensitivity: sensitivity,
                 connected: false,
+                fe_alive: false,
                 last_data_time: 0.0,
             }
         })
@@ -138,6 +141,53 @@ async fn main() -> anyhow::Result<()> {
                 {
                     warn!("[{}] No data for 60s, marking disconnected", device.name);
                     device.connected = false;
+                }
+            }
+        }
+    });
+
+    // Periodic front-end ping: TCP connect to each device IP:56000
+    let state_for_ping = app_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(PING_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            // Collect (index, ip) pairs while holding the lock briefly
+            let targets: Vec<(usize, String)> = {
+                let s = state_for_ping.read().await;
+                s.devices
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| !d.config.ip.is_empty())
+                    .map(|(i, d)| (i, d.config.ip.clone()))
+                    .collect()
+            };
+            // Ping all devices concurrently
+            let mut handles = Vec::new();
+            for (idx, ip) in targets {
+                handles.push(tokio::spawn(async move {
+                    let addr = format!("{ip}:56000");
+                    let alive = tokio::time::timeout(
+                        std::time::Duration::from_millis(PING_TIMEOUT_MS),
+                        tokio::net::TcpStream::connect(&addr),
+                    )
+                    .await
+                    .map(|r| r.is_ok())
+                    .unwrap_or(false);
+                    (idx, alive)
+                }));
+            }
+            let mut results = Vec::new();
+            for h in handles {
+                if let Ok(r) = h.await {
+                    results.push(r);
+                }
+            }
+            // Update state with results
+            let mut s = state_for_ping.write().await;
+            for (idx, alive) in results {
+                if let Some(device) = s.devices.get_mut(idx) {
+                    device.fe_alive = alive;
                 }
             }
         }
