@@ -139,11 +139,47 @@ fn extract_f64(value: &DbrValue) -> Option<f64> {
     }
 }
 
-/// Read a PV value once (blocking-style, for use in async context)
-pub async fn caget(pv_name: &str) -> anyhow::Result<DbrValue> {
-    let mut client = Client::new().await?;
-    let dbr = client.read_pv(pv_name).await?;
-    Ok(dbr)
+/// Extract a full array of f64 from a DbrValue (for waveform PVs).
+/// Scalar variants yield a single-element vec; strings yield None.
+fn extract_f64_array(value: &DbrValue) -> Option<Vec<f64>> {
+    match value {
+        DbrValue::Double(v) => Some(v.clone()),
+        DbrValue::Float(v) => Some(v.iter().map(|f| *f as f64).collect()),
+        DbrValue::Long(v) => Some(v.iter().map(|i| *i as f64).collect()),
+        DbrValue::Int(v) => Some(v.iter().map(|i| *i as f64).collect()),
+        DbrValue::Char(v) => Some(v.iter().map(|i| *i as f64).collect()),
+        DbrValue::Enum(v) => Some(vec![*v as f64]),
+        DbrValue::String(_) => None,
+    }
+}
+
+/// Subscribe to a waveform PV and collect `count` successive array updates.
+/// Used by sweep timing to gather digitizer waveforms. The whole operation is
+/// bounded by `timeout`; a partial or empty result is an error.
+pub async fn collect_waveforms(
+    pv_name: &str,
+    count: usize,
+    timeout: Duration,
+) -> anyhow::Result<Vec<Vec<f64>>> {
+    let collect = async {
+        let mut client = Client::new().await?;
+        let (mut monitor, _token) = client.subscribe(pv_name).await?;
+        let mut waveforms: Vec<Vec<f64>> = Vec::with_capacity(count);
+        while waveforms.len() < count {
+            let dbr = monitor
+                .recv()
+                .await
+                .map_err(|e| anyhow::anyhow!("monitor recv error for {pv_name}: {e}"))?;
+            if let Some(arr) = extract_f64_array(dbr.value()) {
+                waveforms.push(arr);
+            }
+        }
+        Ok::<_, anyhow::Error>(waveforms)
+    };
+
+    tokio::time::timeout(timeout, collect)
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out collecting {count} waveforms from {pv_name}"))?
 }
 
 /// Write a PV value. Currently shells out to caput since epicars may not support writes.
@@ -157,22 +193,6 @@ pub async fn caput(pv_name: &str, value: f64) -> anyhow::Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("caput failed for {pv_name}: {stderr}");
-    }
-    Ok(())
-}
-
-/// Write an array PV value. Shells out to caput.
-pub async fn caput_array(pv_name: &str, values: &[f64]) -> anyhow::Result<()> {
-    let mut cmd = tokio::process::Command::new("caput");
-    cmd.arg("-a").arg(pv_name).arg(values.len().to_string());
-    for v in values {
-        cmd.arg(v.to_string());
-    }
-    let output = cmd.output().await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("caput -a failed for {pv_name}: {stderr}");
     }
     Ok(())
 }

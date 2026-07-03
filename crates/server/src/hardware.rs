@@ -92,7 +92,14 @@ pub fn settings_for_sensitivity(level: u8) -> FrontEndSettings {
     }
 }
 
-/// Build settings for clearing calibration at a given sensitivity
+/// Build settings for clearing (exiting) calibration mode at a given sensitivity.
+///
+/// The front-end box's calibration state is controlled by `io.input`:
+/// `"CAL"` = calibration mode on (internal reference), `"EXT"` = off (external beam
+/// signal, i.e. normal operation). Clearing calibration therefore just forces `EXT`.
+/// This matches the reference implementation, which only ever exits calibration mode.
+/// Note `settings_for_sensitivity` already defaults `io.input` to `EXT`, so for a
+/// device not currently in calibration mode this is equivalent to a normal push.
 pub fn settings_for_clear_calibration(level: u8) -> FrontEndSettings {
     let mut settings = settings_for_sensitivity(level);
     settings.io.input = "EXT".to_string();

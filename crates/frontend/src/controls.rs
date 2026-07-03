@@ -155,6 +155,15 @@ pub fn draw_device_controls(
                     device: device.name.clone(),
                 });
             }
+
+            if ui.button("Clear")
+                .on_hover_text("Empty this device's rolling data buffer")
+                .clicked()
+            {
+                out_msgs.push(ClientMessage::ClearBuffer {
+                    device: Some(device.name.clone()),
+                });
+            }
         });
     });
 }
@@ -171,6 +180,12 @@ pub fn draw_global_controls(
     ui.horizontal(|ui: &mut egui::Ui| {
         if ui.button("Clear Calibration (All)").clicked() {
             out_msgs.push(ClientMessage::ClearCalibration);
+        }
+        if ui.button("Clear Data (All)")
+            .on_hover_text("Empty the rolling data buffers for all devices")
+            .clicked()
+        {
+            out_msgs.push(ClientMessage::ClearBuffer { device: None });
         }
         ui.separator();
         ui.label("Buffer:");
