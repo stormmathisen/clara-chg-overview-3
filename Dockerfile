@@ -1,5 +1,5 @@
 # Stage 1: Build server + frontend WASM
-FROM rust:1.85-bookworm AS builder
+FROM rust:bookworm AS builder
 
 # Install trunk and wasm target
 RUN rustup target add wasm32-unknown-unknown \
@@ -20,7 +20,10 @@ RUN mkdir -p crates/shared/src crates/server/src crates/frontend/src \
     && echo "" > crates/frontend/src/lib.rs \
     && touch crates/shared/src/messages.rs crates/shared/src/config.rs \
     && cargo build --release -p server 2>/dev/null || true \
-    && rm -rf crates/
+    && rm -rf crates/ \
+    && rm -f target/release/server target/release/server.d \
+    && rm -f target/release/deps/server-* target/release/deps/shared-* \
+    && rm -f target/release/deps/libshared-*
 
 # Copy real source code
 COPY crates/ crates/
@@ -40,12 +43,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        epics-base \
     && rm -rf /var/lib/apt/lists/*
 
-# epics-base provides caput/caget; if not available via apt, it can be omitted
-# and caput calls will fail gracefully with logged errors.
-RUN which caput 2>/dev/null || true
+# Note: caput/caget from EPICS base are not installed here.
+# PV write commands will fail gracefully with logged errors.
+# To enable PV writes, mount an EPICS base installation or
+# install from source and add to PATH.
 
 # Run as non-root user
 RUN useradd -r -s /usr/sbin/nologin appuser

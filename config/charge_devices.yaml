@@ -1,7 +1,7 @@
 CLA-S01-DIA-WCM-01:
   type: 'wcm'
   digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH0'
-  ip: '192.168.114.14'
+  ip: '192.168.114.9'
   sensitivities: [ 3, 4 ]
   pvs:
     charge: 'CLA-S01-DIA-WCM-01:Q'
@@ -22,7 +22,7 @@ CLA-S01-DIA-WCM-01:
 CLA-S01-DIA-WCM-01:DQ:
   type: 'dq'
   digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH0'
-  ip: '192.168.114.14'
+  ip: '192.168.114.9'
   sensitivities: [ 3, 4 ]
   pvs:
     charge: 'CLA-S01-DIA-WCM-01:DQ'
@@ -42,7 +42,7 @@ CLA-SP1-DIA-FCUP-01:
   type: 'fcup'
   digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH1'
   ip: '192.168.114.10'
-  sensitivities: [ 3, 4 ]
+  sensitivities: [ 0, 1, 2, 3, 4 ]
   pvs:
     charge: 'CLA-SP1-DIA-FCUP-01:Q'
     base_low: 'CLA-SP1-DIA-FCUP-01:base:Low'
@@ -57,13 +57,13 @@ CLA-SP1-DIA-FCUP-01:
     base_high: 800
     peak_low: 1040
     peak_high: 1046
-    corrA: [ -0.0025950308442806913, -0.009212913251858192 ]
-    corrB: [ 0.0, 0.0 ]
+    corrA: [ -0.000151312, -0.000280039, -0.000521627, -0.002595031, -0.009212913 ]
+    corrB: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
 CLA-SP2-DIA-FCUP-01:
   type: 'fcup'
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH0'
   ip: '192.168.114.11'
-  sensitivities: [ 3, 4 ]
+  sensitivities: [ 0, 1, 2, 3, 4 ]
   pvs:
     charge: 'CLA-SP2-DIA-FCUP-01:Q'
     base_low: 'CLA-SP2-DIA-FCUP-01:base:Low'
@@ -78,13 +78,13 @@ CLA-SP2-DIA-FCUP-01:
     base_high: 800
     peak_low: 1003
     peak_high: 1009
-    corrA: [ -0.0025377232, -0.0087183619 ]
-    corrB: [ 0.0, 0.0 ]
+    corrA: [ -0.000147509, -0.000251457, -0.000506871, -0.002537723, -0.008718362 ]
+    corrB: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
 CLA-SP3-DIA-FCUP-01:
   type: 'fcup'
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH1'
   ip: '192.168.114.12'
-  sensitivities: [ 3, 4 ]
+  sensitivities: [ 0, 1, 2, 3, 4 ]
   pvs:
     charge: 'CLA-SP3-DIA-FCUP-01:Q'
     base_low: 'CLA-SP3-DIA-FCUP-01:base:Low'
@@ -99,13 +99,13 @@ CLA-SP3-DIA-FCUP-01:
     base_high: 800
     peak_low: 1023
     peak_high: 1029
-    corrA: [ -0.0025585213, -0.0088201726 ]
-    corrB: [ 0.0, 0.0 ]
+    corrA: [ -0.000151869, -0.000254403, -0.000517876, -0.002558521, -0.008820173 ]
+    corrB: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
 CLA-S07-DIA-FCUP-01:
   type: 'fcup'
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH2'
-  ip: ''
-  sensitivities: [ 3, 4 ]
+  ip: '192.168.114.13'
+  sensitivities: [ 0, 1, 2, 3, 4 ]
   pvs:
     charge: 'CLA-S07-DIA-FCUP-01:Q'
     base_low: 'CLA-S07-DIA-FCUP-01:base:Low'
@@ -120,13 +120,13 @@ CLA-S07-DIA-FCUP-01:
     base_high: 800
     peak_low: 1016
     peak_high: 1022
-    corrA: [ -0.0026158418, -0.0089527958 ]
-    corrB: [ 0.0, 0.0 ]
+    corrA: [ -0.000156783, -0.000261148, -0.000536691, -0.002615842, -0.008952796 ]
+    corrB: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
 CLA-FED-DIA-FCUP-01:
   type: 'fcup'
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH6'
   ip: '192.168.114.9'
-  sensitivities: [ 3, 4 ]
+  sensitivities: [ 0, 1, 2, 3, 4 ]
   pvs:
     charge: 'CLA-FED-DIA-FCUP-01:Q'
     base_low: 'CLA-FED-DIA-FCUP-01:base:Low'
@@ -141,5 +141,45 @@ CLA-FED-DIA-FCUP-01:
     base_high: 800
     peak_low: 1040
     peak_high: 1046
-    corrA: [ -0.0026073539, -0.0083850601 ]
-    corrB: [ 0.0, 0.0 ]
+    corrA: [ -0.000166533, -0.000260706, -0.000529369, -0.002607354, -0.00838506 ]
+    corrB: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]
+CLA-S04-DIA-ICT-01:
+  type: 'ict'
+  digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH2'
+  ip: ''
+  pvs:
+    charge: 'CLA-S04-ICT-01:Charge'
+    HoldDelay: 'CLA-S04-ICT-01:HoldDelay'
+  defaults:
+    charge: 0.0
+    HoldDelay: 45
+CLA-S05-DIA-ICT-01:
+  type: 'ict'
+  digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH2'
+  ip: ''
+  pvs:
+    charge: 'CLA-S05-ICT-01:Charge'
+    HoldDelay: 'CLA-S05-ICT-01:HoldDelay'
+  defaults:
+    charge: 0.0
+    HoldDelay: 100
+CLA-FEA-DIA-ICT-01:
+  type: 'ict'
+  digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH2'
+  ip: ''
+  pvs:
+    charge: 'CLA-FEA-ICT-01:Charge'
+    HoldDelay: 'CLA-FEA-ICT-01:HoldDelay'
+  defaults:
+    charge: 0.0
+    HoldDelay: 103
+CLA-FEH-DIA-ICT-01:
+  type: 'ict'
+  digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH2'
+  ip: ''
+  pvs:
+    charge: 'CLA-FEH-ICT-01:Charge'
+    HoldDelay: 'CLA-FEH-ICT-01:HoldDelay'
+  defaults:
+    charge: 0.0
+    HoldDelay: 153
