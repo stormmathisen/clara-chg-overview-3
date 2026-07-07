@@ -10,6 +10,9 @@ use tracing::warn;
 pub struct RollingBuffer {
     data: VecDeque<[f64; 2]>,
     capacity: usize,
+    /// Monotonic count of all pushes ever, independent of capacity. Used to detect
+    /// "N fresh samples have arrived" even when the buffer is smaller than N.
+    total_pushed: u64,
 }
 
 impl RollingBuffer {
@@ -17,6 +20,7 @@ impl RollingBuffer {
         Self {
             data: VecDeque::with_capacity(capacity),
             capacity,
+            total_pushed: 0,
         }
     }
 
@@ -25,6 +29,23 @@ impl RollingBuffer {
             self.data.pop_front();
         }
         self.data.push_back([timestamp, value]);
+        self.total_pushed = self.total_pushed.wrapping_add(1);
+    }
+
+    /// Total number of values ever pushed, regardless of the rolling capacity.
+    pub fn total_pushed(&self) -> u64 {
+        self.total_pushed
+    }
+
+    /// Mean of the most recent `n` values (or all of them if fewer are buffered).
+    /// Returns None when the buffer is empty.
+    pub fn mean_of_last(&self, n: usize) -> Option<f64> {
+        if self.data.is_empty() {
+            return None;
+        }
+        let take = n.min(self.data.len());
+        let sum: f64 = self.data.iter().rev().take(take).map(|p| p[1]).sum();
+        Some(sum / take as f64)
     }
 
     pub fn set_capacity(&mut self, new_capacity: usize) {
@@ -59,10 +80,6 @@ impl RollingBuffer {
 
     pub fn as_points(&self) -> Vec<[f64; 2]> {
         self.data.iter().copied().collect()
-    }
-
-    pub fn len(&self) -> usize {
-        self.data.len()
     }
 
     pub fn clear(&mut self) {
@@ -146,11 +163,11 @@ mod tests {
         buf.push(1.0, 10.0);
         buf.push(2.0, 20.0);
         buf.push(3.0, 30.0);
-        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.as_points().len(), 3);
 
         // Exceeding capacity drops oldest
         buf.push(4.0, 40.0);
-        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.as_points().len(), 3);
         let points = buf.as_points();
         assert_eq!(points[0], [2.0, 20.0]);
         assert_eq!(points[2], [4.0, 40.0]);
@@ -162,13 +179,38 @@ mod tests {
         for i in 0..5 {
             buf.push(i as f64, i as f64 * 10.0);
         }
-        assert_eq!(buf.len(), 5);
+        assert_eq!(buf.as_points().len(), 5);
 
         buf.set_capacity(2);
-        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.as_points().len(), 2);
         let points = buf.as_points();
         assert_eq!(points[0], [3.0, 30.0]);
         assert_eq!(points[1], [4.0, 40.0]);
+    }
+
+    #[test]
+    fn rolling_buffer_mean_of_last_and_total_pushed() {
+        let mut buf = RollingBuffer::new(100);
+        assert_eq!(buf.mean_of_last(10), None);
+        for i in 1..=10 {
+            buf.push(i as f64, (i * 10) as f64); // values 10,20,...,100
+        }
+        assert_eq!(buf.total_pushed(), 10);
+        // last 3 values: 80, 90, 100 -> mean 90
+        assert!((buf.mean_of_last(3).unwrap() - 90.0).abs() < 1e-10);
+        // n larger than buffer averages everything (10..100 -> 55)
+        assert!((buf.mean_of_last(1000).unwrap() - 55.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn rolling_buffer_total_pushed_counts_beyond_capacity() {
+        let mut buf = RollingBuffer::new(3);
+        for i in 0..10 {
+            buf.push(i as f64, i as f64);
+        }
+        // Only 3 retained, but the push counter keeps climbing.
+        assert_eq!(buf.as_points().len(), 3);
+        assert_eq!(buf.total_pushed(), 10);
     }
 
     #[test]

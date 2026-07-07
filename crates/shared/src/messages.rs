@@ -112,6 +112,8 @@ pub enum ClientMessage {
     ClearCalibration,
     SetBufferSize { size: usize },
     SetDeviceOrder { order: Vec<String> },
+    /// Clear the rolling data buffer for one device, or all devices if `None`.
+    ClearBuffer { device: Option<String> },
 }
 
 #[cfg(test)]
