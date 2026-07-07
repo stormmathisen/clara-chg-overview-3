@@ -1,4 +1,5 @@
 use shared::config::{DeviceConfig, NetworkConfig};
+use shared::messages::DeviceType;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -9,10 +10,12 @@ pub fn load_device_configs(path: &Path) -> anyhow::Result<HashMap<String, Device
 
     // Validate each device config
     for (name, config) in &configs {
-        anyhow::ensure!(
-            !config.sensitivities.is_empty(),
-            "Device {name}: sensitivities array must not be empty"
-        );
+        if config.device_type != DeviceType::Ict {
+            anyhow::ensure!(
+                !config.sensitivities.is_empty(),
+                "Device {name}: sensitivities array must not be empty"
+            );
+        }
         anyhow::ensure!(
             config.pvs.contains_key("charge"),
             "Device {name}: missing required 'charge' PV"
@@ -108,5 +111,26 @@ test-device:
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("charge"));
+    }
+
+    #[test]
+    fn ict_config_loads_without_sensitivities() {
+        let yaml = r#"
+test-ict:
+  type: ict
+  digitizer: "DIG01"
+  ip: ""
+  pvs:
+    charge: "TEST:CHARGE"
+    HoldDelay: "TEST:HOLDDELAY"
+  defaults:
+    charge: 0.0
+    HoldDelay: 0
+"#;
+        let (_dir, path) = write_temp_yaml(yaml);
+        let configs = load_device_configs(&path).unwrap();
+        assert_eq!(configs.len(), 1);
+        let cfg = configs.get("test-ict").unwrap();
+        assert!(cfg.sensitivities.is_empty());
     }
 }

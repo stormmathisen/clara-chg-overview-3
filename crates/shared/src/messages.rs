@@ -49,6 +49,7 @@ pub enum DeviceType {
     Wcm,
     Dq,
     Fcup,
+    Ict,
 }
 
 /// A notification to display in the UI
@@ -168,6 +169,8 @@ mod tests {
         assert_eq!(DeviceType::Wcm, DeviceType::Wcm);
         assert_ne!(DeviceType::Wcm, DeviceType::Dq);
         assert_ne!(DeviceType::Dq, DeviceType::Fcup);
+        assert_ne!(DeviceType::Fcup, DeviceType::Ict);
+        assert_eq!(DeviceType::Ict, DeviceType::Ict);
     }
 
     #[test]

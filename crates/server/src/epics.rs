@@ -146,33 +146,29 @@ pub async fn caget(pv_name: &str) -> anyhow::Result<DbrValue> {
     Ok(dbr)
 }
 
-/// Write a PV value. Currently shells out to caput since epicars may not support writes.
+/// Write a PV value using epicars native Channel Access.
 pub async fn caput(pv_name: &str, value: f64) -> anyhow::Result<()> {
-    let output = tokio::process::Command::new("caput")
-        .arg(pv_name)
-        .arg(value.to_string())
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("caput failed for {pv_name}: {stderr}");
-    }
+    let mut client = tokio::time::timeout(Duration::from_secs(5), Client::new())
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout connecting for caput {pv_name}"))??;
+    tokio::time::timeout(Duration::from_secs(5), client.write_pv(pv_name, value))
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout writing {pv_name}"))??;
+    info!("caput {pv_name} {value}");
     Ok(())
 }
 
-/// Write an array PV value. Shells out to caput.
+/// Write an array PV value using epicars native Channel Access.
 pub async fn caput_array(pv_name: &str, values: &[f64]) -> anyhow::Result<()> {
-    let mut cmd = tokio::process::Command::new("caput");
-    cmd.arg("-a").arg(pv_name).arg(values.len().to_string());
-    for v in values {
-        cmd.arg(v.to_string());
-    }
-    let output = cmd.output().await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("caput -a failed for {pv_name}: {stderr}");
-    }
+    let mut client = tokio::time::timeout(Duration::from_secs(5), Client::new())
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout connecting for caput_array {pv_name}"))??;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        client.write_pv(pv_name, values.to_vec()),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timeout writing array {pv_name}"))??;
+    info!("caput -a {pv_name} ({} elements)", values.len());
     Ok(())
 }

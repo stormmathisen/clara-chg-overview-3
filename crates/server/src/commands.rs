@@ -60,6 +60,11 @@ async fn handle_set_sensitivity(
             return;
         };
 
+        if device.config.device_type == DeviceType::Ict {
+            error!("SetSensitivity not applicable to ICT device {device_name}");
+            return;
+        }
+
         let sensitivities = &device.config.sensitivities;
         if index >= sensitivities.len() {
             error!("Sensitivity index {index} out of range for {device_name}");
@@ -272,7 +277,7 @@ async fn handle_clear_calibration(
         state_read
             .devices
             .iter()
-            .filter(|d| d.config.device_type != DeviceType::Dq)
+            .filter(|d| d.config.device_type != DeviceType::Dq && d.config.device_type != DeviceType::Ict)
             .map(|d| {
                 let level = d.config.sensitivities
                     .get(d.current_sensitivity)

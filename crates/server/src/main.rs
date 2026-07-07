@@ -58,27 +58,14 @@ async fn main() -> anyhow::Result<()> {
 
     config::apply_epics_env(&network_config, virtual_mode);
 
-    // Check caput availability
-    match tokio::process::Command::new("which")
-        .arg("caput")
-        .output()
-        .await
-    {
-        Ok(output) if output.status.success() => {
-            info!("caput command found in PATH");
-        }
-        _ => {
-            warn!("caput not found in PATH — EPICS write commands will fail");
-        }
-    }
-
     let persisted = PersistedState::load(&state_path);
     let buffer_size = persisted.buffer_size;
 
     let mut devices: Vec<DeviceState> = device_configs
         .into_iter()
         .map(|(name, cfg)| {
-            let sensitivity = persisted.sensitivities.get(&name).copied().unwrap_or(0);
+            let max_index = cfg.sensitivities.len().saturating_sub(1);
+            let sensitivity = persisted.sensitivities.get(&name).copied().unwrap_or(max_index);
             DeviceState {
                 config: cfg,
                 name,

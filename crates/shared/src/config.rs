@@ -10,6 +10,7 @@ pub struct DeviceConfig {
     pub device_type: DeviceType,
     pub digitizer: String,
     pub ip: String,
+    #[serde(default)]
     pub sensitivities: Vec<u8>,
     pub pvs: HashMap<String, String>,
     pub defaults: HashMap<String, DefaultValue>,
