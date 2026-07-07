@@ -8,11 +8,23 @@ use crate::controls;
 use crate::strip_chart;
 use crate::ws_client::WsClient;
 
+/// Y-axis scaling mode for all strip charts
+#[derive(Clone, Debug, PartialEq)]
+pub enum YAxisScale {
+    /// Auto-scale to fit data (default)
+    Auto,
+    /// Lower bound fixed at 0, upper bound auto-scaled
+    ZeroBased,
+    /// Manual min and max
+    Manual { min: f64, max: f64 },
+}
+
 /// Filter state for display
 pub struct DisplayFilter {
     pub show_wcm: bool,
     pub show_dq: bool,
     pub show_fcup: bool,
+    pub show_ict: bool,
     pub hidden_devices: HashSet<String>,
 }
 
@@ -22,6 +34,7 @@ impl Default for DisplayFilter {
             show_wcm: true,
             show_dq: true,
             show_fcup: true,
+            show_ict: true,
             hidden_devices: HashSet::new(),
         }
     }
@@ -33,6 +46,7 @@ impl DisplayFilter {
             DeviceType::Wcm => self.show_wcm,
             DeviceType::Dq => self.show_dq,
             DeviceType::Fcup => self.show_fcup,
+            DeviceType::Ict => self.show_ict,
         };
         type_visible && !self.hidden_devices.contains(&device.name)
     }
@@ -50,6 +64,9 @@ pub struct ChargeOverviewApp {
     pub device_order: Vec<String>,
     pub frozen_stats: Option<Vec<(String, Stats)>>,
     frame_count: u64,
+    pub y_scale: YAxisScale,
+    pub y_min_str: String,
+    pub y_max_str: String,
 }
 
 impl ChargeOverviewApp {
@@ -72,6 +89,9 @@ impl ChargeOverviewApp {
             device_order: Vec::new(),
             frozen_stats: None,
             frame_count: 0,
+            y_scale: YAxisScale::Auto,
+            y_min_str: String::new(),
+            y_max_str: String::new(),
         }
     }
 
@@ -150,7 +170,7 @@ impl eframe::App for ChargeOverviewApp {
                 };
                 ui.colored_label(status_color, if self.connected { "● Connected" } else { "● Disconnected" });
             });
-            controls::draw_global_controls(ui, &mut self.buffer_size, &mut self.buffer_size_str, &mut out_msgs, &mut self.frozen_stats, &self.snapshots);
+            controls::draw_global_controls(ui, &mut self.buffer_size, &mut self.buffer_size_str, &mut out_msgs, &mut self.frozen_stats, &self.snapshots, &mut self.y_scale, &mut self.y_min_str, &mut self.y_max_str);
         });
 
         // Bottom panel: notifications
@@ -177,20 +197,66 @@ impl eframe::App for ChargeOverviewApp {
                     controls::draw_filter_controls(ui, &self.devices, &mut self.filter);
                     ui.separator();
                     let order_before = self.device_order.clone();
-                    for i in 0..self.device_order.len() {
-                        let name = &self.device_order[i];
-                        if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
-                            controls::draw_device_controls(
-                                ui,
-                                device,
-                                &mut out_msgs,
-                                i,
-                                self.device_order.len(),
-                                &mut self.device_order,
-                            );
-                            ui.add_space(4.0);
+                    let names = order_before.clone();
+                    let total = names.len();
+                    let mut item_rects: Vec<egui::Rect> = Vec::new();
+
+                    let (_, dropped_payload) = ui.dnd_drop_zone::<String, ()>(egui::Frame::default(), |ui| {
+                        for (i, name) in names.iter().enumerate() {
+                            if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
+                                let item_id = egui::Id::new("device_dnd").with(name.as_str());
+                                let scope_resp = ui.scope(|ui| {
+                                    ui.horizontal(|ui: &mut egui::Ui| {
+                                        ui.dnd_drag_source(item_id, name.clone(), |ui| {
+                                            ui.label(
+                                                egui::RichText::new("⠿")
+                                                    .size(16.0)
+                                                    .color(egui::Color32::GRAY),
+                                            )
+                                            .on_hover_text("Drag to reorder");
+                                        });
+                                        ui.vertical(|ui: &mut egui::Ui| {
+                                            controls::draw_device_controls(
+                                                ui,
+                                                device,
+                                                &mut out_msgs,
+                                                i,
+                                                total,
+                                                &mut self.device_order,
+                                            );
+                                        });
+                                    });
+                                });
+                                item_rects.push(scope_resp.response.rect);
+                                ui.add_space(4.0);
+                            }
+                        }
+                    });
+
+                    // Handle drag-and-drop reorder
+                    if let Some(source_name) = dropped_payload {
+                        if let Some(source_idx) = self.device_order.iter().position(|n| n == source_name.as_str()) {
+                            if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
+                                let mut target_idx = self.device_order.len();
+                                for (rect_i, rect) in item_rects.iter().enumerate() {
+                                    if pointer_pos.y < rect.center().y {
+                                        target_idx = rect_i;
+                                        break;
+                                    }
+                                }
+                                if source_idx != target_idx {
+                                    let item = self.device_order.remove(source_idx);
+                                    let adjusted = if source_idx < target_idx {
+                                        (target_idx - 1).min(self.device_order.len())
+                                    } else {
+                                        target_idx.min(self.device_order.len())
+                                    };
+                                    self.device_order.insert(adjusted, item);
+                                }
+                            }
                         }
                     }
+
                     if self.device_order != order_before {
                         out_msgs.push(ClientMessage::SetDeviceOrder {
                             order: self.device_order.clone(),
@@ -225,7 +291,7 @@ impl eframe::App for ChargeOverviewApp {
                     let stats_override = self.frozen_stats.as_ref().and_then(|fs| {
                         fs.iter().find(|(n, _)| n == &snapshot.device_name).map(|(_, s)| s)
                     });
-                    strip_chart::draw_strip_chart(ui, snapshot, chart_height, stats_override);
+                    strip_chart::draw_strip_chart(ui, snapshot, chart_height, stats_override, &self.y_scale);
                     ui.add_space(4.0);
                 }
             });

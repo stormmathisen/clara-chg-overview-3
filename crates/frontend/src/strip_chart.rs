@@ -1,8 +1,10 @@
 use egui_plot::{AxisHints, Line, Plot, PlotPoints};
 use shared::messages::{ChartSnapshot, Stats};
 
+use crate::app::YAxisScale;
+
 /// Draw a strip chart for a single device
-pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32, stats_override: Option<&Stats>) {
+pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32, stats_override: Option<&Stats>, y_scale: &YAxisScale) {
     let stats = stats_override.unwrap_or(&snapshot.stats);
     let frozen = stats_override.is_some();
 
@@ -32,17 +34,31 @@ pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32
     let x_axes = vec![AxisHints::new_x().formatter(format_timestamp)];
     let y_axes = vec![AxisHints::new_y().label("Charge (pC)")];
 
-    Plot::new(&snapshot.device_name)
+    let mut plot = Plot::new(&snapshot.device_name)
         .height(height)
         .custom_x_axes(x_axes)
         .custom_y_axes(y_axes)
         .show_axes([true, true])
         .allow_drag(false)
         .allow_zoom(false)
-        .allow_scroll(false)
-        .show(ui, |plot_ui| {
-            plot_ui.line(line);
-        });
+        .allow_scroll(false);
+
+    match y_scale {
+        YAxisScale::Auto => {}
+        YAxisScale::ZeroBased => {
+            plot = plot.include_y(0.0);
+        }
+        YAxisScale::Manual { min, max } => {
+            plot = plot
+                .include_y(*min)
+                .include_y(*max)
+                .auto_bounds(egui::Vec2b::new(true, false));
+        }
+    }
+
+    plot.show(ui, |plot_ui| {
+        plot_ui.line(line);
+    });
 }
 
 fn format_timestamp(mark: egui_plot::GridMark, _range: &std::ops::RangeInclusive<f64>) -> String {
