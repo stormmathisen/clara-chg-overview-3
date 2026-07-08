@@ -10,12 +10,28 @@ pub struct Stats {
     pub rmsd: f64,
 }
 
-/// A snapshot of chart data for one device
+/// A full snapshot of one device's rolling buffer. Sent once per client on connect
+/// and again on structural resets (buffer clear / resize). Devices are addressed by
+/// their index into the `Init.devices` list rather than by repeating the PV name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChartSnapshot {
-    pub device_name: String,
+    pub device: usize,
     pub points: Vec<[f64; 2]>, // [timestamp_secs, value]
     pub stats: Stats,
+    /// Total samples ever pushed for this device (the append cursor). Subsequent
+    /// deltas whose cursor is `<=` this are already included in `points`.
+    pub cursor: u64,
+}
+
+/// An incremental append for one device: the points pushed since the previous tick.
+/// This is the steady-state 10 Hz payload — typically a single point per device.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeviceDelta {
+    pub device: usize,
+    pub new_points: Vec<[f64; 2]>,
+    pub stats: Stats,
+    /// Total samples ever pushed after appending `new_points`.
+    pub cursor: u64,
 }
 
 /// Status of a single device
@@ -72,8 +88,11 @@ pub enum ServerMessage {
         buffer_size: usize,
         device_order: Vec<String>,
     },
-    /// Periodic chart data update (all devices)
+    /// Full chart snapshot: replace the client's buffers wholesale. Sent per-client
+    /// on connect and broadcast after a buffer clear/resize.
     ChartData { snapshots: Vec<ChartSnapshot> },
+    /// Incremental chart update: append new points. The steady-state 10 Hz message.
+    ChartDelta { updates: Vec<DeviceDelta> },
     /// A single state change broadcast to all clients
     StateUpdate { device: String, sensitivity: usize },
     /// Buffer size changed
@@ -117,6 +136,46 @@ pub enum ClientMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chart_data_roundtrip_carries_index_and_cursor() {
+        let msg = ServerMessage::ChartData {
+            snapshots: vec![ChartSnapshot {
+                device: 2,
+                points: vec![[1.0, 10.0], [2.0, 20.0]],
+                stats: Stats::default(),
+                cursor: 42,
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        let ServerMessage::ChartData { snapshots } = decoded else {
+            panic!("expected ChartData");
+        };
+        assert_eq!(snapshots[0].device, 2);
+        assert_eq!(snapshots[0].cursor, 42);
+        assert_eq!(snapshots[0].points.len(), 2);
+    }
+
+    #[test]
+    fn chart_delta_roundtrip() {
+        let msg = ServerMessage::ChartDelta {
+            updates: vec![DeviceDelta {
+                device: 0,
+                new_points: vec![[3.0, 30.0]],
+                stats: Stats::default(),
+                cursor: 43,
+            }],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
+        let ServerMessage::ChartDelta { updates } = decoded else {
+            panic!("expected ChartDelta");
+        };
+        assert_eq!(updates[0].device, 0);
+        assert_eq!(updates[0].cursor, 43);
+        assert_eq!(updates[0].new_points, vec![[3.0, 30.0]]);
+    }
 
     #[test]
     fn server_message_init_roundtrip() {

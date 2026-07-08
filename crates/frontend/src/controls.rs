@@ -1,6 +1,6 @@
-use shared::messages::{ChartSnapshot, ClientMessage, DeviceStatus, DeviceType, Stats};
+use shared::messages::{ClientMessage, DeviceStatus, DeviceType, Stats};
 
-use crate::app::{DisplayFilter, YAxisScale, YAxisState};
+use crate::app::{DeviceChart, DisplayFilter, YAxisScale, YAxisState};
 use crate::util::{hms, status_color};
 
 /// A coloured status dot (`●`) with a context-dependent hover explanation.
@@ -208,7 +208,7 @@ pub fn draw_global_controls(
     buffer_size_str: &mut String,
     out_msgs: &mut Vec<ClientMessage>,
     frozen_stats: &mut Option<Vec<(String, Stats)>>,
-    snapshots: &[ChartSnapshot],
+    charts: &[DeviceChart],
     y_axis: &mut YAxisState,
 ) {
     let YAxisState {
@@ -260,9 +260,9 @@ pub fn draw_global_controls(
                 *frozen_stats = None;
             } else {
                 *frozen_stats = Some(
-                    snapshots
+                    charts
                         .iter()
-                        .map(|s| (s.device_name.clone(), s.stats.clone()))
+                        .map(|c| (c.name.clone(), c.stats.clone()))
                         .collect(),
                 );
             }
