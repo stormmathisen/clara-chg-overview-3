@@ -35,14 +35,6 @@ pub struct DeviceStatus {
     pub defaults: HashMap<String, f64>,
 }
 
-/// Basic device info sent on init
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DeviceInfo {
-    pub name: String,
-    pub device_type: DeviceType,
-    pub sensitivities: Vec<u8>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceType {

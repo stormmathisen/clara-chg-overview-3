@@ -12,9 +12,7 @@ use crate::audit::AuditLog;
 use crate::commands;
 use crate::state::{AppState, InnerState};
 
-const BROADCAST_CHANNEL_CAPACITY: usize = 2048;
-const BROADCAST_INTERVAL_MS: u64 = 100;
-const MAX_COMMANDS_PER_SEC: usize = 10;
+use crate::consts::{BROADCAST_CHANNEL_CAPACITY, BROADCAST_INTERVAL, MAX_COMMANDS_PER_SEC};
 
 /// Broadcaster for server messages to all connected clients
 pub type Broadcaster = broadcast::Sender<String>;
@@ -23,6 +21,15 @@ pub type Broadcaster = broadcast::Sender<String>;
 pub fn new_broadcaster() -> Broadcaster {
     let (tx, _) = broadcast::channel(BROADCAST_CHANNEL_CAPACITY);
     tx
+}
+
+/// Serialize a `ServerMessage` once and broadcast it to all connected clients.
+/// Send errors (no subscribers) and the practically-impossible serialize error are
+/// ignored — these message types always serialize.
+pub fn send_message(broadcaster: &Broadcaster, msg: &ServerMessage) {
+    if let Ok(json) = serde_json::to_string(msg) {
+        let _ = broadcaster.send(json);
+    }
 }
 
 /// Build chart data snapshots from current state
@@ -74,17 +81,13 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
 /// Spawn the periodic chart data broadcast task (10 Hz)
 pub fn spawn_chart_broadcaster(state: AppState, broadcaster: Broadcaster) {
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_millis(BROADCAST_INTERVAL_MS));
+        let mut interval = tokio::time::interval(BROADCAST_INTERVAL);
         loop {
             interval.tick().await;
             let state_read = state.read().await;
             let msg = build_chart_data(&state_read);
             drop(state_read);
-            if let Ok(json) = serde_json::to_string(&msg) {
-                // Ignore send errors — means no subscribers
-                let _ = broadcaster.send(json);
-            }
+            send_message(&broadcaster, &msg);
         }
     });
 }
@@ -194,8 +197,5 @@ pub fn broadcast_notification(
             .unwrap_or_default()
             .as_secs_f64(),
     };
-    let msg = ServerMessage::Notify(notification);
-    if let Ok(json) = serde_json::to_string(&msg) {
-        let _ = broadcaster.send(json);
-    }
+    send_message(broadcaster, &ServerMessage::Notify(notification));
 }

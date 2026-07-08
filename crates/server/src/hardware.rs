@@ -72,22 +72,11 @@ impl Default for FrontEndSettings {
     }
 }
 
-/// Build settings for a given sensitivity level (0–5 maps to FB0–FB5)
+/// Build settings for a given sensitivity level (0–5 maps to FB0–FB5).
+/// Only the integrator differs from the default (normal-operation) settings.
 pub fn settings_for_sensitivity(level: u8) -> FrontEndSettings {
-    let integrator = format!("FB{level}");
     FrontEndSettings {
-        calibration: Calibration {
-            reference: "REF2048mV".to_string(),
-            level: 128,
-            trigger: 1,
-            offset: 1,
-        },
-        io: InputOutput {
-            input: "EXT".to_string(),
-            output: "TERM".to_string(),
-            reference: "REF500mV".to_string(),
-        },
-        integrator,
+        integrator: format!("FB{level}"),
         ..Default::default()
     }
 }
@@ -112,11 +101,11 @@ pub async fn send_settings(ip: &str, settings: &FrontEndSettings) -> anyhow::Res
         anyhow::bail!("No IP address configured for device");
     }
 
-    let addr = format!("{ip}:56000");
+    let addr = format!("{ip}:{}", crate::consts::FRONT_END_PORT);
     info!("Connecting to front-end at {addr}");
 
     let mut stream = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
+        crate::consts::FRONT_END_CONNECT_TIMEOUT,
         TcpStream::connect(&addr),
     )
     .await??;
@@ -128,4 +117,34 @@ pub async fn send_settings(ip: &str, settings: &FrontEndSettings) -> anyhow::Res
 
     info!("Settings sent to {addr}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_for_sensitivity_only_changes_integrator() {
+        let s = settings_for_sensitivity(4);
+        assert_eq!(s.integrator, "FB4");
+        // Everything else matches normal-operation defaults.
+        assert_eq!(s.io.input, "EXT");
+        assert_eq!(s.calibration.reference, "REF2048mV");
+    }
+
+    #[test]
+    fn clear_calibration_forces_external_input() {
+        let s = settings_for_clear_calibration(3);
+        assert_eq!(s.integrator, "FB3");
+        assert_eq!(s.io.input, "EXT");
+    }
+
+    #[test]
+    fn settings_serialize_to_expected_json_shape() {
+        let json = serde_json::to_value(settings_for_sensitivity(0)).unwrap();
+        assert_eq!(json["integrator"], "FB0");
+        assert_eq!(json["io"]["input"], "EXT");
+        assert_eq!(json["calibration"]["level"], 128);
+        assert_eq!(json["power"]["integrator"], true);
+    }
 }
