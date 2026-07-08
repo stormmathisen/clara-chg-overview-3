@@ -1,6 +1,7 @@
 mod app;
 mod controls;
 mod strip_chart;
+mod util;
 mod ws_client;
 
 use wasm_bindgen::prelude::*;
