@@ -16,32 +16,43 @@ pub struct DeviceConfig {
     pub defaults: HashMap<String, DefaultValue>,
 }
 
-/// A default value can be a scalar (f64), an integer, or a per-sensitivity array
+/// A default value is either a single scalar (used for every sensitivity) or a
+/// per-sensitivity array indexed by the current sensitivity.
+///
+/// The two variants are structurally distinct in YAML (a scalar `5` vs a sequence
+/// `[5, 6]`), so `#[serde(untagged)]` resolves them unambiguously — unlike the
+/// previous four-variant form where the float/int ordering was fragile. YAML
+/// integers deserialize into `Scalar(f64)` / `Array(Vec<f64>)` just fine.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DefaultValue {
-    Float(f64),
-    Int(i64),
-    FloatArray(Vec<f64>),
-    IntArray(Vec<i64>),
+    Scalar(f64),
+    Array(Vec<f64>),
 }
 
 impl DefaultValue {
     /// Get the value for a given sensitivity index as f64.
     /// For scalars, returns the scalar regardless of index.
-    /// For arrays, returns the element at that index (or the last element if out of bounds).
+    /// For arrays, returns the element at that index. Out-of-range falls back to
+    /// the last element (or 0.0 if empty); config validation
+    /// (`server::config::load_device_configs`) rejects arrays whose length does
+    /// not match `sensitivities`, so the fallback is unreachable for valid config.
     pub fn for_sensitivity(&self, index: usize) -> f64 {
         match self {
-            DefaultValue::Float(v) => *v,
-            DefaultValue::Int(v) => *v as f64,
-            DefaultValue::FloatArray(arr) => arr
+            DefaultValue::Scalar(v) => *v,
+            DefaultValue::Array(arr) => arr
                 .get(index)
                 .or_else(|| arr.last())
                 .copied()
                 .unwrap_or(0.0),
-            DefaultValue::IntArray(arr) => {
-                arr.get(index).or_else(|| arr.last()).copied().unwrap_or(0) as f64
-            }
+        }
+    }
+
+    /// If this value is a per-sensitivity array, its length; `None` for scalars.
+    pub fn array_len(&self) -> Option<usize> {
+        match self {
+            DefaultValue::Scalar(_) => None,
+            DefaultValue::Array(arr) => Some(arr.len()),
         }
     }
 }
@@ -55,4 +66,29 @@ pub struct NetworkConfig {
     pub virtual_: HashMap<String, String>,
     #[serde(rename = "CATAP_PATH")]
     pub catap_path: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_value_scalar_is_constant_across_sensitivities() {
+        let v: DefaultValue = serde_json::from_str("1027").unwrap();
+        assert!(matches!(v, DefaultValue::Scalar(_)));
+        assert_eq!(v.array_len(), None);
+        assert_eq!(v.for_sensitivity(0), 1027.0);
+        assert_eq!(v.for_sensitivity(5), 1027.0);
+    }
+
+    #[test]
+    fn default_value_array_indexes_by_sensitivity() {
+        let v: DefaultValue = serde_json::from_str("[0.1, 0.2, 0.3]").unwrap();
+        assert!(matches!(v, DefaultValue::Array(_)));
+        assert_eq!(v.array_len(), Some(3));
+        assert!((v.for_sensitivity(0) - 0.1).abs() < 1e-9);
+        assert!((v.for_sensitivity(2) - 0.3).abs() < 1e-9);
+        // Out-of-range falls back to the last element.
+        assert!((v.for_sensitivity(9) - 0.3).abs() < 1e-9);
+    }
 }

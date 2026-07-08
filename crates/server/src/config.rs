@@ -20,6 +20,25 @@ pub fn load_device_configs(path: &Path) -> anyhow::Result<HashMap<String, Device
             config.pvs.contains_key("charge"),
             "Device {name}: missing required 'charge' PV"
         );
+        // Per-sensitivity default arrays are indexed by the current sensitivity, so
+        // their length must match `sensitivities`. A mismatch would otherwise be
+        // masked at runtime by `DefaultValue::for_sensitivity`'s last-element fallback.
+        let n_sens = config.sensitivities.len();
+        for (key, value) in &config.defaults {
+            if let Some(len) = value.array_len() {
+                // Devices without sensitivities (ICT) have nothing to index an array by.
+                anyhow::ensure!(
+                    n_sens > 0,
+                    "Device {name}: default '{key}' is a per-sensitivity array, but the \
+                     device has no sensitivities (use a scalar default)"
+                );
+                anyhow::ensure!(
+                    len == n_sens,
+                    "Device {name}: default '{key}' has {len} values but there are \
+                     {n_sens} sensitivities (per-sensitivity arrays must match)"
+                );
+            }
+        }
     }
 
     Ok(configs)
@@ -132,5 +151,73 @@ test-ict:
         assert_eq!(configs.len(), 1);
         let cfg = configs.get("test-ict").unwrap();
         assert!(cfg.sensitivities.is_empty());
+    }
+
+    #[test]
+    fn ict_with_per_sensitivity_array_rejected() {
+        // An ICT has no sensitivities, so an array default cannot be indexed.
+        let yaml = r#"
+test-ict:
+  type: ict
+  digitizer: "DIG01"
+  ip: ""
+  pvs:
+    charge: "TEST:CHARGE"
+    HoldDelay: "TEST:HOLDDELAY"
+  defaults:
+    HoldDelay: [1, 2]
+"#;
+        let (_dir, path) = write_temp_yaml(yaml);
+        let err = load_device_configs(&path).unwrap_err().to_string();
+        assert!(err.contains("HoldDelay"), "{err}");
+        assert!(err.contains("no sensitivities"), "{err}");
+    }
+
+    #[test]
+    fn per_sensitivity_array_matching_length_loads() {
+        // Two sensitivities, a scalar default and a matching 2-element array default.
+        let yaml = r#"
+test-device:
+  type: wcm
+  digitizer: "DIG01"
+  ip: "192.168.1.1"
+  sensitivities: [3, 4]
+  pvs:
+    charge: "TEST:CHARGE"
+    corrA: "TEST:CORRA"
+  defaults:
+    base_low: 1025
+    corrA: [0.089, 0.273]
+"#;
+        let (_dir, path) = write_temp_yaml(yaml);
+        let configs = load_device_configs(&path).unwrap();
+        let dev = &configs["test-device"];
+        // Array indexes by sensitivity; scalar is constant.
+        assert!((dev.defaults["corrA"].for_sensitivity(1) - 0.273).abs() < 1e-9);
+        assert!((dev.defaults["base_low"].for_sensitivity(1) - 1025.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn per_sensitivity_array_length_mismatch_rejected() {
+        // Three sensitivities but only two calibration values — this is exactly the
+        // silent-fallback bug the validation is meant to catch.
+        let yaml = r#"
+test-device:
+  type: wcm
+  digitizer: "DIG01"
+  ip: "192.168.1.1"
+  sensitivities: [3, 4, 5]
+  pvs:
+    charge: "TEST:CHARGE"
+    corrA: "TEST:CORRA"
+  defaults:
+    corrA: [0.089, 0.273]
+"#;
+        let (_dir, path) = write_temp_yaml(yaml);
+        let result = load_device_configs(&path);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("corrA"));
+        assert!(err_msg.contains("sensitivities"));
     }
 }
