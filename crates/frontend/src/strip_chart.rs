@@ -1,27 +1,23 @@
 use egui_plot::{AxisHints, Line, Plot, PlotPoints};
-use shared::messages::{ChartSnapshot, Stats};
+use shared::messages::Stats;
 
-use crate::app::YAxisScale;
+use crate::app::{DeviceChart, YAxisScale};
 use crate::util::hms;
 
 /// Draw a strip chart for a single device
 pub fn draw_strip_chart(
     ui: &mut egui::Ui,
-    snapshot: &ChartSnapshot,
+    chart: &DeviceChart,
     height: f32,
     stats_override: Option<&Stats>,
     y_scale: &YAxisScale,
 ) {
-    let stats = stats_override.unwrap_or(&snapshot.stats);
+    let stats = stats_override.unwrap_or(&chart.stats);
     let frozen = stats_override.is_some();
 
     // Stats header
     ui.horizontal(|ui: &mut egui::Ui| {
-        ui.label(
-            egui::RichText::new(&snapshot.device_name)
-                .strong()
-                .size(14.0),
-        );
+        ui.label(egui::RichText::new(&chart.name).strong().size(14.0));
         if frozen {
             ui.colored_label(egui::Color32::YELLOW, "❄ FROZEN");
         }
@@ -29,16 +25,16 @@ pub fn draw_strip_chart(
         stats_label(ui, stats);
     });
 
-    // Plot. `points` is already `Vec<[f64; 2]>`, so hand it to egui_plot directly
-    // instead of mapping each element through an identity copy.
-    let points = PlotPoints::from(snapshot.points.clone());
+    // The rolling buffer is a (non-contiguous) VecDeque, so materialise the points
+    // into a Vec for egui_plot.
+    let points = PlotPoints::from(chart.buffer.points().iter().copied().collect::<Vec<_>>());
 
     let line = Line::new(points).color(egui::Color32::LIGHT_BLUE);
 
     let x_axes = vec![AxisHints::new_x().formatter(format_timestamp)];
     let y_axes = vec![AxisHints::new_y().label("Charge (pC)")];
 
-    let mut plot = Plot::new(&snapshot.device_name)
+    let mut plot = Plot::new(&chart.name)
         .height(height)
         .custom_x_axes(x_axes)
         .custom_y_axes(y_axes)

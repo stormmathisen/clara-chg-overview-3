@@ -1,6 +1,6 @@
+use shared::chart::PointBuffer;
 use shared::messages::{
-    ChartSnapshot, ClientMessage, DeviceStatus, DeviceType, Notification, NotificationLevel,
-    ServerMessage, Stats,
+    ClientMessage, DeviceStatus, DeviceType, Notification, NotificationLevel, ServerMessage, Stats,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -36,6 +36,44 @@ impl Default for YAxisState {
             min_str: String::new(),
             max_str: String::new(),
         }
+    }
+}
+
+/// A client-side chart for one device: the shared point buffer (kept in sync via
+/// snapshots/deltas) plus the display name and latest stats. Addressed by the device's
+/// index in the `Init.devices` list.
+pub struct DeviceChart {
+    pub name: String,
+    pub buffer: PointBuffer,
+    pub stats: Stats,
+}
+
+impl DeviceChart {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            buffer: PointBuffer::new(),
+            stats: Stats::default(),
+        }
+    }
+
+    fn set_snapshot(&mut self, points: Vec<[f64; 2]>, stats: Stats, cursor: u64, cap: usize) {
+        self.buffer.set_snapshot(points, cursor, cap);
+        self.stats = stats;
+    }
+
+    fn apply_delta(&mut self, new_points: Vec<[f64; 2]>, stats: Stats, cursor: u64, cap: usize) {
+        // Ignore stats from deltas that are entirely stale (the buffer ignores the
+        // points too); keep the newer stats we already hold.
+        if cursor <= self.buffer.cursor() {
+            return;
+        }
+        self.buffer.apply_delta(new_points, cursor, cap);
+        self.stats = stats;
+    }
+
+    fn set_capacity(&mut self, cap: usize) {
+        self.buffer.set_capacity(cap);
     }
 }
 
@@ -88,7 +126,8 @@ impl DisplayFilter {
 pub struct ChargeOverviewApp {
     ws: WsClient,
     devices: Vec<DeviceStatus>,
-    snapshots: Vec<ChartSnapshot>,
+    /// Per-device chart buffers, parallel to `devices` (same index the server uses).
+    charts: Vec<DeviceChart>,
     notifications: VecDeque<(Notification, u64)>,
     buffer_size: usize,
     pub buffer_size_str: String,
@@ -111,7 +150,7 @@ impl ChargeOverviewApp {
         Self {
             ws,
             devices: Vec::new(),
-            snapshots: Vec::new(),
+            charts: Vec::new(),
             notifications: VecDeque::new(),
             buffer_size: DEFAULT_BUFFER_SIZE,
             buffer_size_str: DEFAULT_BUFFER_SIZE.to_string(),
@@ -136,13 +175,30 @@ impl ChargeOverviewApp {
                     device_order,
                 } => {
                     self.device_order = device_order;
+                    // Rebuild chart buffers parallel to the device list; the full
+                    // ChartData snapshot that follows Init fills them in.
+                    self.charts = devices
+                        .iter()
+                        .map(|d| DeviceChart::new(d.name.clone()))
+                        .collect();
                     self.devices = devices;
                     self.buffer_size = buffer_size;
                 }
                 ServerMessage::ChartData { snapshots } => {
-                    // The charts read stats straight off each snapshot, so there is no
-                    // need to copy them back into `devices`.
-                    self.snapshots = snapshots;
+                    let cap = self.buffer_size;
+                    for snap in snapshots {
+                        if let Some(chart) = self.charts.get_mut(snap.device) {
+                            chart.set_snapshot(snap.points, snap.stats, snap.cursor, cap);
+                        }
+                    }
+                }
+                ServerMessage::ChartDelta { updates } => {
+                    let cap = self.buffer_size;
+                    for upd in updates {
+                        if let Some(chart) = self.charts.get_mut(upd.device) {
+                            chart.apply_delta(upd.new_points, upd.stats, upd.cursor, cap);
+                        }
+                    }
                 }
                 ServerMessage::StateUpdate {
                     device,
@@ -155,6 +211,9 @@ impl ChargeOverviewApp {
                 ServerMessage::BufferSizeChanged { size } => {
                     self.buffer_size = size;
                     self.buffer_size_str = size.to_string();
+                    for chart in &mut self.charts {
+                        chart.set_capacity(size);
+                    }
                 }
                 ServerMessage::DeviceOrderChanged { order } => {
                     self.device_order = order;
@@ -204,7 +263,7 @@ impl eframe::App for ChargeOverviewApp {
                 &mut self.buffer_size_str,
                 &mut out_msgs,
                 &mut self.frozen_stats,
-                &self.snapshots,
+                &self.charts,
                 &mut self.y_axis,
             );
         });
@@ -316,15 +375,12 @@ impl eframe::App for ChargeOverviewApp {
             });
 
         // Central panel: strip charts
-        let snapshot_by_name: HashMap<&str, &ChartSnapshot> = self
-            .snapshots
-            .iter()
-            .map(|s| (s.device_name.as_str(), s))
-            .collect();
+        let chart_by_name: HashMap<&str, &DeviceChart> =
+            self.charts.iter().map(|c| (c.name.as_str(), c)).collect();
         egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
             egui::ScrollArea::vertical().show(ui, |ui: &mut egui::Ui| {
-                // Build ordered, filtered snapshots
-                let visible_snapshots: Vec<&ChartSnapshot> = self
+                // Ordered, filtered charts to render.
+                let visible_charts: Vec<&DeviceChart> = self
                     .device_order
                     .iter()
                     .filter_map(|name| {
@@ -332,26 +388,24 @@ impl eframe::App for ChargeOverviewApp {
                         if !self.filter.is_visible(device) {
                             return None;
                         }
-                        snapshot_by_name.get(name.as_str()).copied()
+                        chart_by_name.get(name.as_str()).copied()
                     })
                     .collect();
 
-                let chart_height = if visible_snapshots.is_empty() {
+                let chart_height = if visible_charts.is_empty() {
                     CHART_HEIGHT_EMPTY
                 } else {
                     let avail = ui.available_height();
-                    (avail / visible_snapshots.len() as f32)
-                        .clamp(CHART_HEIGHT_MIN, CHART_HEIGHT_MAX)
+                    (avail / visible_charts.len() as f32).clamp(CHART_HEIGHT_MIN, CHART_HEIGHT_MAX)
                 };
-                for snapshot in &visible_snapshots {
-                    let stats_override = self.frozen_stats.as_ref().and_then(|fs| {
-                        fs.iter()
-                            .find(|(n, _)| n == &snapshot.device_name)
-                            .map(|(_, s)| s)
-                    });
+                for chart in &visible_charts {
+                    let stats_override = self
+                        .frozen_stats
+                        .as_ref()
+                        .and_then(|fs| fs.iter().find(|(n, _)| n == &chart.name).map(|(_, s)| s));
                     strip_chart::draw_strip_chart(
                         ui,
-                        snapshot,
+                        chart,
                         chart_height,
                         stats_override,
                         &self.y_axis.scale,

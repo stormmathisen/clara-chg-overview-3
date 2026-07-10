@@ -7,7 +7,7 @@ use crate::audit::AuditLog;
 use crate::epics;
 use crate::hardware;
 use crate::state::AppState;
-use crate::ws::{broadcast_notification, send_message, Broadcaster};
+use crate::ws::{broadcast_chart_reset, broadcast_notification, send_message, Broadcaster};
 
 /// PV / default map keys used across device configs. Centralised so the vocabulary
 /// lives in one place instead of being repeated as bare string literals.
@@ -85,7 +85,7 @@ pub async fn handle_command(
             Ok(())
         }
         ClientMessage::ClearBuffer { device } => {
-            handle_clear_buffer(device, state).await;
+            handle_clear_buffer(device, state, broadcaster).await;
             Ok(())
         }
     };
@@ -302,24 +302,27 @@ async fn handle_zero_wcm(
 }
 
 /// Clear the rolling data buffer for one device (`Some(name)`) or all devices (`None`).
-/// No dedicated broadcast is needed: the emptied charts appear on the next periodic
-/// ChartData tick.
-async fn handle_clear_buffer(device: Option<String>, state: &AppState) {
-    let mut state_write = state.write().await;
-    match device {
-        Some(name) => {
-            if let Some(d) = state_write.device_mut(&name) {
-                d.buffer.clear();
-            } else {
-                error!("ClearBuffer: device {name} not found");
+/// A clear can't be expressed as an append delta, so a full chart snapshot is
+/// broadcast afterwards to reset every client's buffers.
+async fn handle_clear_buffer(device: Option<String>, state: &AppState, broadcaster: &Broadcaster) {
+    {
+        let mut state_write = state.write().await;
+        match device {
+            Some(name) => {
+                if let Some(d) = state_write.device_mut(&name) {
+                    d.buffer.clear();
+                } else {
+                    error!("ClearBuffer: device {name} not found");
+                }
             }
-        }
-        None => {
-            for d in &mut state_write.devices {
-                d.buffer.clear();
+            None => {
+                for d in &mut state_write.devices {
+                    d.buffer.clear();
+                }
             }
         }
     }
+    broadcast_chart_reset(state, broadcaster).await;
 }
 
 /// Read a device's monotonic buffer push counter, or None if the device is gone.
@@ -608,6 +611,8 @@ async fn handle_set_buffer_size(size: usize, state: &AppState, broadcaster: &Bro
     }
 
     send_message(broadcaster, &ServerMessage::BufferSizeChanged { size });
+    // Resizing may drop points, so reset every client's buffers to match.
+    broadcast_chart_reset(state, broadcaster).await;
 }
 
 async fn handle_set_device_order(order: Vec<String>, state: &AppState, broadcaster: &Broadcaster) {
