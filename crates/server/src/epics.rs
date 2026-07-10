@@ -209,3 +209,39 @@ pub async fn caput(pv_name: &str, value: f64) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_f64_reads_first_scalar_of_each_numeric_variant() {
+        assert_eq!(extract_f64(&DbrValue::Double(vec![1.5, 2.5])), Some(1.5));
+        assert_eq!(extract_f64(&DbrValue::Float(vec![3.0])), Some(3.0));
+        assert_eq!(extract_f64(&DbrValue::Long(vec![-7])), Some(-7.0));
+        assert_eq!(extract_f64(&DbrValue::Int(vec![42])), Some(42.0));
+        assert_eq!(extract_f64(&DbrValue::Char(vec![5])), Some(5.0));
+        assert_eq!(extract_f64(&DbrValue::Enum(9)), Some(9.0));
+    }
+
+    #[test]
+    fn extract_f64_none_for_empty_or_string() {
+        assert_eq!(extract_f64(&DbrValue::Double(vec![])), None);
+        assert_eq!(extract_f64(&DbrValue::String(vec!["x".into()])), None);
+    }
+
+    #[test]
+    fn extract_f64_array_collects_full_waveform() {
+        assert_eq!(
+            extract_f64_array(&DbrValue::Double(vec![1.0, 2.0, 3.0])),
+            Some(vec![1.0, 2.0, 3.0])
+        );
+        assert_eq!(
+            extract_f64_array(&DbrValue::Int(vec![1, 2])),
+            Some(vec![1.0, 2.0])
+        );
+        // Scalar enum yields a single-element vec; strings yield None.
+        assert_eq!(extract_f64_array(&DbrValue::Enum(4)), Some(vec![4.0]));
+        assert_eq!(extract_f64_array(&DbrValue::String(vec![])), None);
+    }
+}

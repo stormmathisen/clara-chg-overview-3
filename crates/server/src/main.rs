@@ -1,6 +1,7 @@
 mod audit;
 mod commands;
 mod config;
+mod consts;
 mod epics;
 mod hardware;
 mod state;
@@ -12,20 +13,16 @@ use axum::{
     routing::get,
     Router,
 };
+use consts::{
+    DEFAULT_PORT, FRONT_END_CONNECT_TIMEOUT, FRONT_END_PORT, MAX_WS_MESSAGE_SIZE, PERSIST_INTERVAL,
+    PING_INTERVAL, WATCHDOG_INTERVAL, WATCHDOG_STALE_SECS,
+};
 use state::{AppState, DeviceState, InnerState, PersistedState, RollingBuffer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tracing::{info, warn};
-
-const PERSIST_INTERVAL_SECS: u64 = 30;
-const WATCHDOG_INTERVAL_SECS: u64 = 10;
-const WATCHDOG_STALE_SECS: f64 = 60.0;
-const PING_INTERVAL_SECS: u64 = 30;
-const PING_TIMEOUT_MS: u64 = 500;
-const DEFAULT_PORT: u16 = 49195;
-const MAX_WS_MESSAGE_SIZE: usize = 64 * 1024;
 
 #[derive(Clone)]
 struct ServerState {
@@ -101,11 +98,11 @@ async fn main() -> anyhow::Result<()> {
         persisted.device_order.clone()
     };
 
-    let app_state: AppState = Arc::new(RwLock::new(InnerState {
+    let app_state: AppState = Arc::new(RwLock::new(InnerState::new(
         devices,
         buffer_size,
         device_order,
-    }));
+    )));
 
     // Start EPICS subscriptions
     let (_epics, mut epics_rx) = epics::EpicsManager::start(&app_state).await?;
@@ -129,8 +126,7 @@ async fn main() -> anyhow::Result<()> {
     // Watchdog: mark devices with no data for 60s as disconnected
     let state_for_watchdog = app_state.clone();
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(WATCHDOG_INTERVAL_SECS));
+        let mut interval = tokio::time::interval(WATCHDOG_INTERVAL);
         loop {
             interval.tick().await;
             let now = std::time::SystemTime::now()
@@ -150,11 +146,10 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Periodic front-end ping: TCP connect to each device IP:56000
+    // Periodic front-end ping: TCP connect to each device front-end box.
     let state_for_ping = app_state.clone();
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(PING_INTERVAL_SECS));
+        let mut interval = tokio::time::interval(PING_INTERVAL);
         loop {
             interval.tick().await;
             // Collect (index, ip) pairs while holding the lock briefly
@@ -171,9 +166,9 @@ async fn main() -> anyhow::Result<()> {
             let mut handles = Vec::new();
             for (idx, ip) in targets {
                 handles.push(tokio::spawn(async move {
-                    let addr = format!("{ip}:56000");
+                    let addr = format!("{ip}:{FRONT_END_PORT}");
                     let alive = tokio::time::timeout(
-                        std::time::Duration::from_millis(PING_TIMEOUT_MS),
+                        FRONT_END_CONNECT_TIMEOUT,
                         tokio::net::TcpStream::connect(&addr),
                     )
                     .await
@@ -202,8 +197,7 @@ async fn main() -> anyhow::Result<()> {
     let state_for_persist = app_state.clone();
     let state_path_clone = state_path.clone();
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(PERSIST_INTERVAL_SECS));
+        let mut interval = tokio::time::interval(PERSIST_INTERVAL);
         loop {
             interval.tick().await;
             let s = state_for_persist.read().await;

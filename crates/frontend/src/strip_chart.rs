@@ -2,6 +2,7 @@ use egui_plot::{AxisHints, Line, Plot, PlotPoints};
 use shared::messages::{ChartSnapshot, Stats};
 
 use crate::app::YAxisScale;
+use crate::util::hms;
 
 /// Draw a strip chart for a single device
 pub fn draw_strip_chart(
@@ -28,8 +29,9 @@ pub fn draw_strip_chart(
         stats_label(ui, stats);
     });
 
-    // Plot
-    let points: PlotPoints = snapshot.points.iter().map(|p| [p[0], p[1]]).collect();
+    // Plot. `points` is already `Vec<[f64; 2]>`, so hand it to egui_plot directly
+    // instead of mapping each element through an identity copy.
+    let points = PlotPoints::from(snapshot.points.clone());
 
     let line = Line::new(points).color(egui::Color32::LIGHT_BLUE);
 
@@ -65,18 +67,12 @@ pub fn draw_strip_chart(
 
 fn format_timestamp(mark: egui_plot::GridMark, _range: &std::ops::RangeInclusive<f64>) -> String {
     let secs = mark.value as i64;
-    let remainder = mark.value - secs as f64;
-    let millis = (remainder * 1000.0) as u32;
-
-    // Convert POSIX timestamp to HH:MM:SS
-    let total_secs = secs.rem_euclid(86400);
-    let h = total_secs / 3600;
-    let m = (total_secs % 3600) / 60;
-    let s = total_secs % 60;
+    let millis = ((mark.value - secs as f64) * 1000.0) as u32;
+    let base = hms(mark.value);
     if millis > 0 {
-        format!("{h:02}:{m:02}:{s:02}.{millis:03}")
+        format!("{base}.{millis:03}")
     } else {
-        format!("{h:02}:{m:02}:{s:02}")
+        base
     }
 }
 

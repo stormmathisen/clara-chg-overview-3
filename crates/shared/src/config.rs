@@ -64,8 +64,6 @@ pub struct NetworkConfig {
     pub physical: HashMap<String, String>,
     #[serde(rename = "VIRTUAL")]
     pub virtual_: HashMap<String, String>,
-    #[serde(rename = "CATAP_PATH")]
-    pub catap_path: Option<String>,
 }
 
 #[cfg(test)]

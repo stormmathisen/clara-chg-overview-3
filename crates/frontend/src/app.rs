@@ -2,10 +2,12 @@ use shared::messages::{
     ChartSnapshot, ClientMessage, DeviceStatus, DeviceType, Notification, NotificationLevel,
     ServerMessage, Stats,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Duration;
 
 use crate::controls;
 use crate::strip_chart;
+use crate::util::status_color;
 use crate::ws_client::WsClient;
 
 /// Y-axis scaling mode for all strip charts
@@ -18,6 +20,37 @@ pub enum YAxisScale {
     /// Manual min and max
     Manual { min: f64, max: f64 },
 }
+
+/// The Y-axis scale plus the raw text of its manual min/max boxes. Bundled so the
+/// three travel together instead of being threaded through as separate arguments.
+pub struct YAxisState {
+    pub scale: YAxisScale,
+    pub min_str: String,
+    pub max_str: String,
+}
+
+impl Default for YAxisState {
+    fn default() -> Self {
+        Self {
+            scale: YAxisScale::Auto,
+            min_str: String::new(),
+            max_str: String::new(),
+        }
+    }
+}
+
+/// Live-update repaint cadence (matches the server's 10 Hz broadcast).
+const REPAINT_INTERVAL: Duration = Duration::from_millis(100);
+/// Maximum notifications retained in the history buffer.
+const MAX_NOTIFICATIONS: usize = 50;
+/// Non-error notifications auto-dismiss after this many frames (~10s at 10 Hz).
+const NOTIFICATION_DISMISS_FRAMES: u64 = 100;
+/// Buffer size assumed until the server's Init message arrives.
+const DEFAULT_BUFFER_SIZE: usize = 1000;
+const CONTROLS_PANEL_WIDTH: f32 = 280.0;
+const CHART_HEIGHT_EMPTY: f32 = 150.0;
+const CHART_HEIGHT_MIN: f32 = 100.0;
+const CHART_HEIGHT_MAX: f32 = 200.0;
 
 /// Filter state for display
 pub struct DisplayFilter {
@@ -64,9 +97,7 @@ pub struct ChargeOverviewApp {
     pub device_order: Vec<String>,
     pub frozen_stats: Option<Vec<(String, Stats)>>,
     frame_count: u64,
-    pub y_scale: YAxisScale,
-    pub y_min_str: String,
-    pub y_max_str: String,
+    pub y_axis: YAxisState,
 }
 
 impl ChargeOverviewApp {
@@ -82,16 +113,14 @@ impl ChargeOverviewApp {
             devices: Vec::new(),
             snapshots: Vec::new(),
             notifications: VecDeque::new(),
-            buffer_size: 1000,
-            buffer_size_str: "1000".to_string(),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            buffer_size_str: DEFAULT_BUFFER_SIZE.to_string(),
             connected: false,
             filter: DisplayFilter::default(),
             device_order: Vec::new(),
             frozen_stats: None,
             frame_count: 0,
-            y_scale: YAxisScale::Auto,
-            y_min_str: String::new(),
-            y_max_str: String::new(),
+            y_axis: YAxisState::default(),
         }
     }
 
@@ -111,15 +140,9 @@ impl ChargeOverviewApp {
                     self.buffer_size = buffer_size;
                 }
                 ServerMessage::ChartData { snapshots } => {
+                    // The charts read stats straight off each snapshot, so there is no
+                    // need to copy them back into `devices`.
                     self.snapshots = snapshots;
-                    // Update stats in device status from snapshots
-                    for snap in &self.snapshots {
-                        if let Some(dev) =
-                            self.devices.iter_mut().find(|d| d.name == snap.device_name)
-                        {
-                            dev.stats = snap.stats.clone();
-                        }
-                    }
                 }
                 ServerMessage::StateUpdate {
                     device,
@@ -138,7 +161,7 @@ impl ChargeOverviewApp {
                 }
                 ServerMessage::Notify(n) => {
                     self.notifications.push_back((n, self.frame_count));
-                    if self.notifications.len() > 50 {
+                    if self.notifications.len() > MAX_NOTIFICATIONS {
                         self.notifications.pop_front();
                     }
                 }
@@ -152,10 +175,11 @@ impl eframe::App for ChargeOverviewApp {
         self.process_messages();
         self.frame_count += 1;
 
-        // Auto-dismiss non-error notifications after ~10s (100 frames at 10Hz)
+        // Auto-dismiss non-error notifications after NOTIFICATION_DISMISS_FRAMES frames.
         let fc = self.frame_count;
         self.notifications.retain(|(n, received_frame)| {
-            matches!(n.level, NotificationLevel::Error) || fc - received_frame < 100
+            matches!(n.level, NotificationLevel::Error)
+                || fc - received_frame < NOTIFICATION_DISMISS_FRAMES
         });
 
         let mut out_msgs: Vec<ClientMessage> = Vec::new();
@@ -165,13 +189,8 @@ impl eframe::App for ChargeOverviewApp {
             ui.horizontal(|ui: &mut egui::Ui| {
                 ui.heading("CLARA Charge Overview");
                 ui.separator();
-                let status_color = if self.connected {
-                    egui::Color32::GREEN
-                } else {
-                    egui::Color32::RED
-                };
                 ui.colored_label(
-                    status_color,
+                    status_color(self.connected),
                     if self.connected {
                         "● Connected"
                     } else {
@@ -186,9 +205,7 @@ impl eframe::App for ChargeOverviewApp {
                 &mut out_msgs,
                 &mut self.frozen_stats,
                 &self.snapshots,
-                &mut self.y_scale,
-                &mut self.y_min_str,
-                &mut self.y_max_str,
+                &mut self.y_axis,
             );
         });
 
@@ -208,23 +225,30 @@ impl eframe::App for ChargeOverviewApp {
             });
         });
 
+        // Devices keyed by name, so the panels below avoid repeated linear scans.
+        let device_by_name: HashMap<&str, &DeviceStatus> =
+            self.devices.iter().map(|d| (d.name.as_str(), d)).collect();
+
         // Left panel: device controls
         egui::SidePanel::left("controls_panel")
-            .default_width(280.0)
+            .default_width(CONTROLS_PANEL_WIDTH)
             .show(ctx, |ui: &mut egui::Ui| {
                 egui::ScrollArea::vertical().show(ui, |ui: &mut egui::Ui| {
                     controls::draw_filter_controls(ui, &self.devices, &mut self.filter);
                     ui.separator();
-                    let order_before = self.device_order.clone();
-                    let names = order_before.clone();
+                    // `reordered` is set by the Up/Dn buttons (returned from
+                    // draw_device_controls) and by the drag-and-drop handler below, so we
+                    // don't need to clone the order just to diff it afterwards.
+                    let mut reordered = false;
+                    // A snapshot of the names to iterate while `device_order` is mutably borrowed.
+                    let names = self.device_order.clone();
                     let total = names.len();
                     let mut item_rects: Vec<egui::Rect> = Vec::new();
 
                     let (_, dropped_payload) =
                         ui.dnd_drop_zone::<String, ()>(egui::Frame::default(), |ui| {
                             for (i, name) in names.iter().enumerate() {
-                                if let Some(device) = self.devices.iter().find(|d| &d.name == name)
-                                {
+                                if let Some(device) = device_by_name.get(name.as_str()) {
                                     let item_id = egui::Id::new("device_dnd").with(name.as_str());
                                     let scope_resp = ui.scope(|ui| {
                                         ui.horizontal(|ui: &mut egui::Ui| {
@@ -237,7 +261,7 @@ impl eframe::App for ChargeOverviewApp {
                                                 .on_hover_text("Drag to reorder");
                                             });
                                             ui.vertical(|ui: &mut egui::Ui| {
-                                                controls::draw_device_controls(
+                                                reordered |= controls::draw_device_controls(
                                                     ui,
                                                     device,
                                                     &mut out_msgs,
@@ -277,12 +301,13 @@ impl eframe::App for ChargeOverviewApp {
                                         target_idx.min(self.device_order.len())
                                     };
                                     self.device_order.insert(adjusted, item);
+                                    reordered = true;
                                 }
                             }
                         }
                     }
 
-                    if self.device_order != order_before {
+                    if reordered {
                         out_msgs.push(ClientMessage::SetDeviceOrder {
                             order: self.device_order.clone(),
                         });
@@ -291,6 +316,11 @@ impl eframe::App for ChargeOverviewApp {
             });
 
         // Central panel: strip charts
+        let snapshot_by_name: HashMap<&str, &ChartSnapshot> = self
+            .snapshots
+            .iter()
+            .map(|s| (s.device_name.as_str(), s))
+            .collect();
         egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
             egui::ScrollArea::vertical().show(ui, |ui: &mut egui::Ui| {
                 // Build ordered, filtered snapshots
@@ -298,21 +328,20 @@ impl eframe::App for ChargeOverviewApp {
                     .device_order
                     .iter()
                     .filter_map(|name| {
-                        let device = self.devices.iter().find(|d| &d.name == name)?;
+                        let device = device_by_name.get(name.as_str())?;
                         if !self.filter.is_visible(device) {
                             return None;
                         }
-                        self.snapshots.iter().find(|s| &s.device_name == name)
+                        snapshot_by_name.get(name.as_str()).copied()
                     })
                     .collect();
 
                 let chart_height = if visible_snapshots.is_empty() {
-                    150.0
+                    CHART_HEIGHT_EMPTY
                 } else {
                     let avail = ui.available_height();
                     (avail / visible_snapshots.len() as f32)
-                        .max(100.0)
-                        .min(200.0)
+                        .clamp(CHART_HEIGHT_MIN, CHART_HEIGHT_MAX)
                 };
                 for snapshot in &visible_snapshots {
                     let stats_override = self.frozen_stats.as_ref().and_then(|fs| {
@@ -325,7 +354,7 @@ impl eframe::App for ChargeOverviewApp {
                         snapshot,
                         chart_height,
                         stats_override,
-                        &self.y_scale,
+                        &self.y_axis.scale,
                     );
                     ui.add_space(4.0);
                 }
@@ -338,7 +367,7 @@ impl eframe::App for ChargeOverviewApp {
         }
 
         // Request repaint at 10Hz for live updates
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(REPAINT_INTERVAL);
     }
 }
 

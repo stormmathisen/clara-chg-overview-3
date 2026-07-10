@@ -112,6 +112,43 @@ pub struct InnerState {
     pub devices: Vec<DeviceState>,
     pub buffer_size: usize,
     pub device_order: Vec<String>,
+    /// Device name -> index into `devices`, so lookups by name are O(1) instead of a
+    /// linear scan. `devices` is built once at startup and never reordered (the UI
+    /// reorders `device_order`, not `devices`), so this stays valid for the process life.
+    name_index: std::collections::HashMap<String, usize>,
+}
+
+impl InnerState {
+    /// Build state from the device list, deriving the name index. `devices` must not
+    /// be reordered afterwards or the index (and EPICS/ping index routing) go stale.
+    pub fn new(devices: Vec<DeviceState>, buffer_size: usize, device_order: Vec<String>) -> Self {
+        let name_index = devices
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.name.clone(), i))
+            .collect();
+        Self {
+            devices,
+            buffer_size,
+            device_order,
+            name_index,
+        }
+    }
+
+    /// Index of a device by name, if present.
+    pub fn device_index(&self, name: &str) -> Option<usize> {
+        self.name_index.get(name).copied()
+    }
+
+    /// Shared reference to a device by name.
+    pub fn device(&self, name: &str) -> Option<&DeviceState> {
+        self.device_index(name).map(|i| &self.devices[i])
+    }
+
+    /// Mutable reference to a device by name.
+    pub fn device_mut(&mut self, name: &str) -> Option<&mut DeviceState> {
+        self.device_index(name).map(|i| &mut self.devices[i])
+    }
 }
 
 pub type AppState = Arc<RwLock<InnerState>>;
