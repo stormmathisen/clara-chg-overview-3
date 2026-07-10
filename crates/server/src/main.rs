@@ -55,18 +55,6 @@ async fn main() -> anyhow::Result<()> {
 
     config::apply_epics_env(&network_config, virtual_mode);
 
-    // PV writes shell out to the external `caput` binary (see epics::caput), so surface a
-    // missing EPICS base at startup rather than at the first write. The Docker image builds
-    // EPICS from source; a local checkout needs `caput` on PATH.
-    match tokio::process::Command::new("caput")
-        .arg("-h")
-        .output()
-        .await
-    {
-        Ok(output) if output.status.success() => info!("caput found on PATH"),
-        _ => warn!("caput not found on PATH — EPICS PV writes will fail (logged, non-fatal)"),
-    }
-
     let persisted = PersistedState::load(&state_path);
     let buffer_size = persisted.buffer_size;
 
