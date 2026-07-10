@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::controls;
 use crate::strip_chart;
-use crate::util::status_color;
+use crate::util::{hms, notification_color, status_color};
 use crate::ws_client::WsClient;
 
 /// Y-axis scaling mode for all strip charts
@@ -79,16 +79,32 @@ impl DeviceChart {
 
 /// Live-update repaint cadence (matches the server's 10 Hz broadcast).
 const REPAINT_INTERVAL: Duration = Duration::from_millis(100);
-/// Maximum notifications retained in the history buffer.
-const MAX_NOTIFICATIONS: usize = 50;
-/// Non-error notifications auto-dismiss after this many frames (~10s at 10 Hz).
-const NOTIFICATION_DISMISS_FRAMES: u64 = 100;
+/// Maximum notifications retained in the history buffer. Oldest are dropped first.
+const MAX_NOTIFICATIONS: usize = 200;
+/// How long a non-error notification stays in the collapsed bar. It remains in the
+/// history either way.
+const NOTIFICATION_DISMISS_SECS: f64 = 10.0;
+/// Tallest the expanded history list grows before it scrolls internally.
+const HISTORY_MAX_HEIGHT: f32 = 180.0;
 /// Buffer size assumed until the server's Init message arrives.
 const DEFAULT_BUFFER_SIZE: usize = 1000;
 const CONTROLS_PANEL_WIDTH: f32 = 280.0;
 const CHART_HEIGHT_EMPTY: f32 = 150.0;
 const CHART_HEIGHT_MIN: f32 = 100.0;
 const CHART_HEIGHT_MAX: f32 = 200.0;
+
+/// A received notification, plus the local clock reading at the moment it arrived.
+///
+/// The two timestamps answer different questions and must not be conflated.
+/// `notification.timestamp` is the server's wall clock, which is what the history
+/// displays. `received_at` is egui's monotonic seconds-since-start, which is what
+/// decides when the collapsed bar stops showing the message — so a clock skew
+/// between server and browser cannot pin a message to the bar forever or expire it
+/// the instant it appears.
+struct NotificationEntry {
+    notification: Notification,
+    received_at: f64,
+}
 
 /// Filter state for display
 pub struct DisplayFilter {
@@ -128,14 +144,17 @@ pub struct ChargeOverviewApp {
     devices: Vec<DeviceStatus>,
     /// Per-device chart buffers, parallel to `devices` (same index the server uses).
     charts: Vec<DeviceChart>,
-    notifications: VecDeque<(Notification, u64)>,
+    /// Every notification received this session, oldest first. Nothing is evicted on
+    /// a timer — only the collapsed bar hides old entries — so the history survives.
+    notifications: VecDeque<NotificationEntry>,
+    /// Whether the notification panel is expanded to show the history.
+    history_open: bool,
     buffer_size: usize,
     pub buffer_size_str: String,
     connected: bool,
     pub filter: DisplayFilter,
     pub device_order: Vec<String>,
     pub frozen_stats: Option<Vec<(String, Stats)>>,
-    frame_count: u64,
     pub y_axis: YAxisState,
 }
 
@@ -152,18 +171,19 @@ impl ChargeOverviewApp {
             devices: Vec::new(),
             charts: Vec::new(),
             notifications: VecDeque::new(),
+            history_open: false,
             buffer_size: DEFAULT_BUFFER_SIZE,
             buffer_size_str: DEFAULT_BUFFER_SIZE.to_string(),
             connected: false,
             filter: DisplayFilter::default(),
             device_order: Vec::new(),
             frozen_stats: None,
-            frame_count: 0,
             y_axis: YAxisState::default(),
         }
     }
 
-    fn process_messages(&mut self) {
+    /// `now` is egui's monotonic clock, stamped onto arriving notifications.
+    fn process_messages(&mut self, now: f64) {
         self.ws.poll();
         self.connected = self.ws.is_connected();
 
@@ -219,7 +239,10 @@ impl ChargeOverviewApp {
                     self.device_order = order;
                 }
                 ServerMessage::Notify(n) => {
-                    self.notifications.push_back((n, self.frame_count));
+                    self.notifications.push_back(NotificationEntry {
+                        notification: n,
+                        received_at: now,
+                    });
                     if self.notifications.len() > MAX_NOTIFICATIONS {
                         self.notifications.pop_front();
                     }
@@ -227,19 +250,52 @@ impl ChargeOverviewApp {
             }
         }
     }
+
+    /// The notification the collapsed bar should show, if any.
+    ///
+    /// Errors never expire; everything else fades from the bar after
+    /// `NOTIFICATION_DISMISS_SECS`. Searching newest-first means a stale info message
+    /// cannot mask an older error that is still demanding attention.
+    fn bar_notification(&self, now: f64) -> Option<&NotificationEntry> {
+        self.notifications.iter().rev().find(|entry| {
+            matches!(entry.notification.level, NotificationLevel::Error)
+                || now - entry.received_at < NOTIFICATION_DISMISS_SECS
+        })
+    }
+
+    /// The expanded history: newest at the top, so the most recent messages are the
+    /// ones adjacent to the bar and no scrolling is needed to see them.
+    fn draw_notification_history(&self, ui: &mut egui::Ui) {
+        if self.notifications.is_empty() {
+            ui.weak("No notifications yet.");
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("notification_history")
+            .max_height(HISTORY_MAX_HEIGHT)
+            .auto_shrink([false, true])
+            .show(ui, |ui: &mut egui::Ui| {
+                for entry in self.notifications.iter().rev() {
+                    let n = &entry.notification;
+                    ui.horizontal(|ui: &mut egui::Ui| {
+                        ui.monospace(hms(n.timestamp));
+                        if let Some(device) = &n.device {
+                            ui.monospace(format!("[{device}]"));
+                        }
+                        ui.colored_label(notification_color(&n.level), &n.message);
+                    });
+                }
+            });
+    }
 }
 
 impl eframe::App for ChargeOverviewApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.process_messages();
-        self.frame_count += 1;
-
-        // Auto-dismiss non-error notifications after NOTIFICATION_DISMISS_FRAMES frames.
-        let fc = self.frame_count;
-        self.notifications.retain(|(n, received_frame)| {
-            matches!(n.level, NotificationLevel::Error)
-                || fc - received_frame < NOTIFICATION_DISMISS_FRAMES
-        });
+        // Seconds since the app started. Repaints are driven by both the 10 Hz timer
+        // and user input, so wall-clock elapsed — not a frame count — is what makes
+        // "dismiss after 10s" mean ten actual seconds.
+        let now = ctx.input(|i| i.time);
+        self.process_messages(now);
 
         let mut out_msgs: Vec<ClientMessage> = Vec::new();
 
@@ -268,18 +324,27 @@ impl eframe::App for ChargeOverviewApp {
             );
         });
 
-        // Bottom panel: notifications
+        // Bottom panel: the current notification, with an arrow that expands the
+        // history upwards. The history is laid out first so that it occupies the space
+        // the panel grows into, leaving the bar pinned against the bottom of the window.
         egui::TopBottomPanel::bottom("notifications").show(ctx, |ui: &mut egui::Ui| {
+            if self.history_open {
+                self.draw_notification_history(ui);
+                ui.separator();
+            }
             ui.horizontal(|ui: &mut egui::Ui| {
+                let (arrow, hint) = if self.history_open {
+                    ("⏷", "Hide notification history")
+                } else {
+                    ("⏶", "Show notification history")
+                };
+                if ui.small_button(arrow).on_hover_text(hint).clicked() {
+                    self.history_open = !self.history_open;
+                }
                 ui.label("Notifications:");
-                if let Some((n, _frame)) = self.notifications.back() {
-                    let color = match n.level {
-                        NotificationLevel::Info => egui::Color32::LIGHT_BLUE,
-                        NotificationLevel::Success => egui::Color32::GREEN,
-                        NotificationLevel::Warning => egui::Color32::YELLOW,
-                        NotificationLevel::Error => egui::Color32::RED,
-                    };
-                    ui.colored_label(color, &n.message);
+                if let Some(entry) = self.bar_notification(now) {
+                    let n = &entry.notification;
+                    ui.colored_label(notification_color(&n.level), &n.message);
                 }
             });
         });
