@@ -71,31 +71,39 @@ Three crates (`crates/`):
 
 ### Two distinct hardware write paths (important)
 
-Device control does **not** go through the epicars client. Depending on the target:
+Device control targets two different transports:
 
 1. **`hardware.rs`** — serializes `FrontEndSettings` to JSON and sends it over a raw TCP
    socket to the device front-end box at **`ip:56000`**. This is how sensitivity/gain and
-   clear-calibration are applied (`settings_for_sensitivity`, `send_settings`).
-2. **`epics::caput`** — shells out to the external **`caput` binary** (EPICS base) to write
-   scalar PVs: `corrA`/`corrB` (zero-WCM), `DQcal`, sweep-timing windows, restore-defaults.
-   `caput` must be on `PATH` at runtime or these writes fail (logged, non-fatal).
+   clear-calibration are applied (`settings_for_sensitivity`, `send_settings`). This is
+   *not* EPICS at all.
+2. **`epics::caput`** — writes scalar PVs over Channel Access using the **native
+   `epicars` client** (`Client::write_pv`): `corrA`/`corrB` (zero-WCM), `DQcal`,
+   sweep-timing windows, restore-defaults. An `f64` becomes a `DbrValue::Double`.
 
-   The `Dockerfile` builds **EPICS base from source** (`epics-builder` stage: git clone at
-   `ARG EPICS_VERSION`, default `R7.0.8.1`, then `make`) and copies `bin/linux-x86_64` and
-   `lib/linux-x86_64` into the runtime image under the **same `/epics-base` prefix** — the
-   binaries carry an rpath of `/epics-base/lib/linux-x86_64`, so relocating them would make
-   library resolution depend on `LD_LIBRARY_PATH` alone. Runtime needs `libreadline8` +
-   `libncurses6` (libCom links them). The image build asserts `caput -h` runs, so a broken
-   EPICS copy fails the build rather than silently degrading PV writes. Locally you need
-   `caput` on `PATH` yourself for writes to work.
+So EPICS is both **read and written** through the native `epicars` client. The name
+`caput` is kept for the function only because it's the vocabulary operators use — no
+external binary is involved, nothing needs to be on `PATH`, and the Docker image ships
+no EPICS base.
 
-So EPICS is read via the native client but written via the `caput` CLI.
+Writes share **one lazily-built `Client`** behind a mutex (`WRITE_CLIENT` in `epics.rs`).
+Building a `Client` costs ~83 ms (CA startup), while a write on an existing one costs
+~0.3 ms — so a fresh client per write would be *slower than the old `caput` shell-out*
+(~34 ms). A failed write clears the cached client so the next attempt reconnects rather
+than reusing a dead circuit. Writes are bounded by `WRITE_TIMEOUT` (5s).
 
-> Note: commit `97e06fd` replaced these shell-outs with the epicars native write API
-> (`client.write_pv`), but the merge `f74d46e` reverted that change in `epics.rs` while
-> keeping the rest of the commit. `main` therefore still shells out to `caput`. The
-> startup check and the EPICS-in-image build were restored in `de315be`; re-applying the
-> *native write path* remains an open decision.
+Note `persistent_monitor` and `collect_waveforms` still build their own clients — they are
+long-lived subscriptions, not per-call operations.
+
+`epics.rs` has an end-to-end test (`caput_writes_scalar_over_channel_access`) that stands
+up an in-process `epicars` CA server via `IntercomProvider`, points the client at it with
+the standard `EPICS_CA_*` env vars, and asserts the value actually lands — no EPICS base
+or external IOC required. It sets process-wide env, so don't run another CA test beside it.
+
+> History: `97e06fd` introduced the native write path, but merge `f74d46e` reverted just
+> the `epics.rs` half while keeping the rest, silently returning the code to shelling out
+> to `caput`. It was reapplied deliberately, and the EPICS-from-source Docker stage
+> (added in `de315be` to make the shell-out work) was removed again.
 
 ### Device model & sensitivity
 
