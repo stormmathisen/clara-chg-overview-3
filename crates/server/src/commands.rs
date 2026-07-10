@@ -7,7 +7,53 @@ use crate::audit::AuditLog;
 use crate::epics;
 use crate::hardware;
 use crate::state::AppState;
-use crate::ws::{broadcast_notification, Broadcaster};
+use crate::ws::{broadcast_chart_reset, broadcast_notification, send_message, Broadcaster};
+
+/// PV / default map keys used across device configs. Centralised so the vocabulary
+/// lives in one place instead of being repeated as bare string literals.
+pub mod keys {
+    pub const CHARGE: &str = "charge";
+    pub const CORR_A: &str = "corrA";
+    pub const CORR_B: &str = "corrB";
+    pub const DQ_CAL: &str = "DQcal";
+    pub const PEAK_LOW: &str = "peak_low";
+    pub const PEAK_HIGH: &str = "peak_high";
+    pub const BASE_LOW: &str = "base_low";
+    pub const BASE_HIGH: &str = "base_high";
+
+    /// The four sweep-timing window keys, in the order they are written.
+    pub const WINDOW_KEYS: [&str; 4] = [PEAK_LOW, PEAK_HIGH, BASE_LOW, BASE_HIGH];
+
+    /// Name of the companion dark-charge (`:DQ`) device for a WCM device.
+    pub fn dq_companion(wcm_name: &str) -> String {
+        format!("{wcm_name}:DQ")
+    }
+}
+
+/// A command failure surfaced to the operator. The dispatcher logs it and pushes an
+/// error notification to all clients, so individual handlers just `return Err(..)`
+/// instead of repeating the log + notify + return triad at every failure site.
+struct CommandError {
+    message: String,
+    device: Option<String>,
+}
+
+impl CommandError {
+    fn for_device(message: impl Into<String>, device: &str) -> Self {
+        Self {
+            message: message.into(),
+            device: Some(device.to_string()),
+        }
+    }
+}
+
+/// Log an error and broadcast it as a notification. Used both by the dispatcher for
+/// returned `CommandError`s and inline by best-effort handlers that keep going after
+/// a per-device failure.
+fn notify_error(broadcaster: &Broadcaster, message: String, device: Option<String>) {
+    error!("{message}");
+    broadcast_notification(broadcaster, NotificationLevel::Error, message, device);
+}
 
 /// Handle a command from a client
 pub async fn handle_command(
@@ -18,31 +64,34 @@ pub async fn handle_command(
 ) {
     audit.log_command("ws-client", &format!("{msg:?}"));
 
-    match msg {
+    let result = match msg {
         ClientMessage::SetSensitivity { device, index } => {
-            handle_set_sensitivity(&device, index, state, broadcaster).await;
+            handle_set_sensitivity(&device, index, state, broadcaster).await
         }
-        ClientMessage::ZeroWCM { device } => {
-            handle_zero_wcm(&device, state, broadcaster).await;
-        }
+        ClientMessage::ZeroWCM { device } => handle_zero_wcm(&device, state, broadcaster).await,
         ClientMessage::SweepTiming { device } => {
-            handle_sweep_timing(&device, state, broadcaster).await;
+            handle_sweep_timing(&device, state, broadcaster).await
         }
         ClientMessage::RestoreDefaults { device } => {
-            handle_restore_defaults(&device, state, broadcaster).await;
+            handle_restore_defaults(&device, state, broadcaster).await
         }
-        ClientMessage::ClearCalibration => {
-            handle_clear_calibration(state, broadcaster).await;
-        }
+        ClientMessage::ClearCalibration => handle_clear_calibration(state, broadcaster).await,
         ClientMessage::SetBufferSize { size } => {
             handle_set_buffer_size(size, state, broadcaster).await;
+            Ok(())
         }
         ClientMessage::SetDeviceOrder { order } => {
             handle_set_device_order(order, state, broadcaster).await;
+            Ok(())
         }
         ClientMessage::ClearBuffer { device } => {
-            handle_clear_buffer(device, state).await;
+            handle_clear_buffer(device, state, broadcaster).await;
+            Ok(())
         }
+    };
+
+    if let Err(e) = result {
+        notify_error(broadcaster, e.message, e.device);
     }
 }
 
@@ -51,44 +100,52 @@ async fn handle_set_sensitivity(
     index: usize,
     state: &AppState,
     broadcaster: &Broadcaster,
-) {
+) -> Result<(), CommandError> {
     let (ip, sensitivity_level, corr_a_pv, corr_a_value, dq_info) = {
         let state_read = state.read().await;
-        let Some(device) = state_read
-            .devices
-            .iter()
-            .find(|d| d.name == device_name)
-        else {
-            error!("Device {device_name} not found");
-            return;
+        let Some(device) = state_read.device(device_name) else {
+            return Err(CommandError::for_device(
+                format!("Device {device_name} not found"),
+                device_name,
+            ));
         };
 
+        // ICTs have no front-end box and no sensitivities to select.
         if device.config.device_type == DeviceType::Ict {
-            error!("SetSensitivity not applicable to ICT device {device_name}");
-            return;
+            return Err(CommandError::for_device(
+                format!("SetSensitivity not applicable to ICT device {device_name}"),
+                device_name,
+            ));
         }
 
         let sensitivities = &device.config.sensitivities;
         if index >= sensitivities.len() {
-            error!("Sensitivity index {index} out of range for {device_name}");
-            return;
+            return Err(CommandError::for_device(
+                format!("Sensitivity index {index} out of range for {device_name}"),
+                device_name,
+            ));
         }
         let level = sensitivities[index];
         let ip = device.config.ip.clone();
 
-        let corr_a_pv = device.config.pvs.get("corrA").cloned();
-        let corr_a_value = device.config.defaults.get("corrA").map(|d| d.for_sensitivity(index));
+        let corr_a_pv = device.config.pvs.get(keys::CORR_A).cloned();
+        let corr_a_value = device
+            .config
+            .defaults
+            .get(keys::CORR_A)
+            .map(|d| d.for_sensitivity(index));
 
         // If WCM, also need to set DQcal for the companion :DQ device
         let dq_info = if device.config.device_type == DeviceType::Wcm {
-            let dq_name = format!("{device_name}:DQ");
             state_read
-                .devices
-                .iter()
-                .find(|d| d.name == dq_name)
+                .device(&keys::dq_companion(device_name))
                 .map(|dq| {
-                    let pv = dq.config.pvs.get("DQcal").cloned();
-                    let val = dq.config.defaults.get("DQcal").map(|d| d.for_sensitivity(index));
+                    let pv = dq.config.pvs.get(keys::DQ_CAL).cloned();
+                    let val = dq
+                        .config
+                        .defaults
+                        .get(keys::DQ_CAL)
+                        .map(|d| d.for_sensitivity(index));
                     (pv, val)
                 })
         } else {
@@ -101,14 +158,10 @@ async fn handle_set_sensitivity(
     // Send TCP settings to hardware
     let settings = hardware::settings_for_sensitivity(sensitivity_level);
     if let Err(e) = hardware::send_settings(&ip, &settings).await {
-        error!("Failed to send settings to {device_name}: {e}");
-        broadcast_notification(
-            broadcaster,
-            NotificationLevel::Error,
+        return Err(CommandError::for_device(
             format!("Failed to set sensitivity for {device_name}: {e}"),
-            Some(device_name.to_string()),
-        );
-        return;
+            device_name,
+        ));
     }
 
     // Set corrA via EPICS
@@ -128,18 +181,18 @@ async fn handle_set_sensitivity(
     // Update state and broadcast
     {
         let mut state_write = state.write().await;
-        if let Some(device) = state_write.devices.iter_mut().find(|d| d.name == device_name) {
+        if let Some(device) = state_write.device_mut(device_name) {
             device.current_sensitivity = index;
         }
     }
 
-    let update = ServerMessage::StateUpdate {
-        device: device_name.to_string(),
-        sensitivity: index,
-    };
-    if let Ok(json) = serde_json::to_string(&update) {
-        let _ = broadcaster.send(json);
-    }
+    send_message(
+        broadcaster,
+        &ServerMessage::StateUpdate {
+            device: device_name.to_string(),
+            sensitivity: index,
+        },
+    );
 
     broadcast_notification(
         broadcaster,
@@ -147,6 +200,7 @@ async fn handle_set_sensitivity(
         format!("Sensitivity set to {sensitivity_level} for {device_name}"),
         Some(device_name.to_string()),
     );
+    Ok(())
 }
 
 /// Number of fresh charge readings averaged to compute the WCM zero offset.
@@ -161,24 +215,23 @@ async fn handle_zero_wcm(
     device_name: &str,
     state: &AppState,
     broadcaster: &Broadcaster,
-) {
+) -> Result<(), CommandError> {
     let corr_b_pv = {
         let state_read = state.read().await;
-        let Some(device) = state_read.devices.iter().find(|d| d.name == device_name) else {
-            error!("Device {device_name} not found");
-            return;
+        let Some(device) = state_read.device(device_name) else {
+            return Err(CommandError::for_device(
+                format!("Device {device_name} not found"),
+                device_name,
+            ));
         };
-        device.config.pvs.get("corrB").cloned()
+        device.config.pvs.get(keys::CORR_B).cloned()
     };
 
     let Some(corr_b_pv) = corr_b_pv else {
-        broadcast_notification(
-            broadcaster,
-            NotificationLevel::Error,
+        return Err(CommandError::for_device(
             format!("No corrB PV for {device_name}"),
-            Some(device_name.to_string()),
-        );
-        return;
+            device_name,
+        ));
     };
 
     broadcast_notification(
@@ -190,68 +243,53 @@ async fn handle_zero_wcm(
 
     // Set corrB to 0 first so that fresh charge readings reflect a zero offset.
     if let Err(e) = epics::caput(&corr_b_pv, 0.0).await {
-        error!("Failed to zero corrB for {device_name}: {e}");
-        broadcast_notification(
-            broadcaster,
-            NotificationLevel::Error,
+        return Err(CommandError::for_device(
             format!("Failed to zero {device_name}: {e}"),
-            Some(device_name.to_string()),
-        );
-        return;
+            device_name,
+        ));
     }
 
     // Snapshot the push counter, then wait for ZERO_SAMPLE_COUNT fresh readings to
     // arrive (robust to the user-configurable buffer size), bounded by ZERO_TIMEOUT.
-    let baseline = match sample_push_count(state, device_name).await {
-        Some(n) => n,
-        None => return,
+    let Some(baseline) = sample_push_count(state, device_name).await else {
+        return Ok(()); // device vanished
     };
     let start = std::time::Instant::now();
     loop {
         tokio::time::sleep(ZERO_POLL).await;
         let Some(now) = sample_push_count(state, device_name).await else {
-            return; // device vanished
+            return Ok(()); // device vanished
         };
         if now.wrapping_sub(baseline) >= ZERO_SAMPLE_COUNT {
             break;
         }
         if start.elapsed() > ZERO_TIMEOUT {
-            broadcast_notification(
-                broadcaster,
-                NotificationLevel::Error,
+            return Err(CommandError::for_device(
                 format!("Zeroing {device_name}: timed out waiting for charge readings"),
-                Some(device_name.to_string()),
-            );
-            return;
+                device_name,
+            ));
         }
     }
 
     let mean = {
         let state_read = state.read().await;
-        let Some(device) = state_read.devices.iter().find(|d| d.name == device_name) else {
-            return;
+        let Some(device) = state_read.device(device_name) else {
+            return Ok(());
         };
         device.buffer.mean_of_last(ZERO_SAMPLE_COUNT as usize)
     };
     let Some(mean) = mean else {
-        broadcast_notification(
-            broadcaster,
-            NotificationLevel::Error,
+        return Err(CommandError::for_device(
             format!("Zeroing {device_name}: no charge readings available"),
-            Some(device_name.to_string()),
-        );
-        return;
+            device_name,
+        ));
     };
 
     if let Err(e) = epics::caput(&corr_b_pv, mean).await {
-        error!("Failed to set corrB to mean for {device_name}: {e}");
-        broadcast_notification(
-            broadcaster,
-            NotificationLevel::Error,
+        return Err(CommandError::for_device(
             format!("Failed to set offset for {device_name}: {e}"),
-            Some(device_name.to_string()),
-        );
-        return;
+            device_name,
+        ));
     }
 
     broadcast_notification(
@@ -260,36 +298,38 @@ async fn handle_zero_wcm(
         format!("Zeroed {device_name}: offset = {mean:.4}"),
         Some(device_name.to_string()),
     );
+    Ok(())
 }
 
 /// Clear the rolling data buffer for one device (`Some(name)`) or all devices (`None`).
-/// No dedicated broadcast is needed: the emptied charts appear on the next periodic
-/// ChartData tick.
-async fn handle_clear_buffer(device: Option<String>, state: &AppState) {
-    let mut state_write = state.write().await;
-    match device {
-        Some(name) => {
-            if let Some(d) = state_write.devices.iter_mut().find(|d| d.name == name) {
-                d.buffer.clear();
-            } else {
-                error!("ClearBuffer: device {name} not found");
+/// A clear can't be expressed as an append delta, so a full chart snapshot is
+/// broadcast afterwards to reset every client's buffers.
+async fn handle_clear_buffer(device: Option<String>, state: &AppState, broadcaster: &Broadcaster) {
+    {
+        let mut state_write = state.write().await;
+        match device {
+            Some(name) => {
+                if let Some(d) = state_write.device_mut(&name) {
+                    d.buffer.clear();
+                } else {
+                    error!("ClearBuffer: device {name} not found");
+                }
             }
-        }
-        None => {
-            for d in &mut state_write.devices {
-                d.buffer.clear();
+            None => {
+                for d in &mut state_write.devices {
+                    d.buffer.clear();
+                }
             }
         }
     }
+    broadcast_chart_reset(state, broadcaster).await;
 }
 
 /// Read a device's monotonic buffer push counter, or None if the device is gone.
 async fn sample_push_count(state: &AppState, device_name: &str) -> Option<u64> {
     let state_read = state.read().await;
     state_read
-        .devices
-        .iter()
-        .find(|d| d.name == device_name)
+        .device(device_name)
         .map(|d| d.buffer.total_pushed())
 }
 
@@ -324,8 +364,16 @@ fn mean_peak_index(waveforms: &[Vec<f64>], find_max: bool) -> Option<f64> {
     let mut n = 0usize;
     for wf in waveforms {
         let Some((idx, _)) = wf.iter().copied().enumerate().reduce(|best, cur| {
-            let better = if find_max { cur.1 > best.1 } else { cur.1 < best.1 };
-            if better { cur } else { best }
+            let better = if find_max {
+                cur.1 > best.1
+            } else {
+                cur.1 < best.1
+            };
+            if better {
+                cur
+            } else {
+                best
+            }
         }) else {
             continue;
         };
@@ -347,12 +395,18 @@ fn compute_windows(
     let peak_offset = (d.peak_high - d.peak_low) / 2;
     let anchor = peak - peak_offset as f64; // float peak_low, reused for the base window
     let mut out = vec![
-        ("peak_low", anchor as i64),
-        ("peak_high", (peak + peak_offset as f64) as i64),
+        (keys::PEAK_LOW, anchor as i64),
+        (keys::PEAK_HIGH, (peak + peak_offset as f64) as i64),
     ];
     if *device_type == DeviceType::Wcm {
-        out.push(("base_low", (anchor - (d.peak_low - d.base_low) as f64) as i64));
-        out.push(("base_high", (anchor - (d.peak_high - d.base_high) as f64) as i64));
+        out.push((
+            keys::BASE_LOW,
+            (anchor - (d.peak_low - d.base_low) as f64) as i64,
+        ));
+        out.push((
+            keys::BASE_HIGH,
+            (anchor - (d.peak_high - d.base_high) as f64) as i64,
+        ));
     }
     out
 }
@@ -361,30 +415,35 @@ async fn handle_sweep_timing(
     device_name: &str,
     state: &AppState,
     broadcaster: &Broadcaster,
-) {
+) -> Result<(), CommandError> {
     // Gather config while holding the read lock briefly.
     let cfg = {
         let state_read = state.read().await;
-        let Some(device) = state_read.devices.iter().find(|d| d.name == device_name) else {
-            error!("Device {device_name} not found");
-            return;
+        let Some(device) = state_read.device(device_name) else {
+            return Err(CommandError::for_device(
+                format!("Device {device_name} not found"),
+                device_name,
+            ));
         };
         let idx = device.current_sensitivity;
-        let def = |k: &str| device.config.defaults.get(k).map(|v| v.for_sensitivity(idx));
+        let def = |k: &str| {
+            device
+                .config
+                .defaults
+                .get(k)
+                .map(|v| v.for_sensitivity(idx))
+        };
 
         // peak_low/peak_high are required for every device type.
-        let (Some(peak_low), Some(peak_high)) = (def("peak_low"), def("peak_high")) else {
-            broadcast_notification(
-                broadcaster,
-                NotificationLevel::Error,
+        let (Some(peak_low), Some(peak_high)) = (def(keys::PEAK_LOW), def(keys::PEAK_HIGH)) else {
+            return Err(CommandError::for_device(
                 format!("Sweep timing: {device_name} has no peak-window defaults configured"),
-                Some(device_name.to_string()),
-            );
-            return;
+                device_name,
+            ));
         };
 
         let mut window_pvs = std::collections::HashMap::new();
-        for key in ["peak_low", "peak_high", "base_low", "base_high"] {
+        for key in keys::WINDOW_KEYS {
             if let Some(pv) = device.config.pvs.get(key) {
                 window_pvs.insert(key, pv.clone());
             }
@@ -397,8 +456,8 @@ async fn handle_sweep_timing(
             defaults: WindowDefaults {
                 peak_low: peak_low as i64,
                 peak_high: peak_high as i64,
-                base_low: def("base_low").unwrap_or(0.0) as i64,
-                base_high: def("base_high").unwrap_or(0.0) as i64,
+                base_low: def(keys::BASE_LOW).unwrap_or(0.0) as i64,
+                base_high: def(keys::BASE_HIGH).unwrap_or(0.0) as i64,
             },
         }
     };
@@ -412,20 +471,11 @@ async fn handle_sweep_timing(
 
     // Collect digitizer waveforms from the "-READ" PV.
     let read_pv = format!("{}-READ", cfg.digitizer);
-    let waveforms =
-        match epics::collect_waveforms(&read_pv, SWEEP_WAVEFORM_COUNT, SWEEP_TIMEOUT).await {
-            Ok(w) => w,
-            Err(e) => {
-                error!("Sweep timing waveform collection failed for {device_name}: {e}");
-                broadcast_notification(
-                    broadcaster,
-                    NotificationLevel::Error,
-                    format!("Sweep timing for {device_name}: {e}"),
-                    Some(device_name.to_string()),
-                );
-                return;
-            }
-        };
+    let waveforms = epics::collect_waveforms(&read_pv, SWEEP_WAVEFORM_COUNT, SWEEP_TIMEOUT)
+        .await
+        .map_err(|e| {
+            CommandError::for_device(format!("Sweep timing for {device_name}: {e}"), device_name)
+        })?;
 
     // WCM/DQ pulses are positive-going (argmax); FCUP is negative-going (argmin).
     // NOTE: the Python reference had a broken `dq` branch (it collapsed each waveform
@@ -433,13 +483,10 @@ async fn handle_sweep_timing(
     // This deviation should be confirmed against real hardware.
     let find_max = cfg.device_type != DeviceType::Fcup;
     let Some(peak) = mean_peak_index(&waveforms, find_max) else {
-        broadcast_notification(
-            broadcaster,
-            NotificationLevel::Error,
+        return Err(CommandError::for_device(
             format!("Sweep timing for {device_name}: no usable waveform data"),
-            Some(device_name.to_string()),
-        );
-        return;
+            device_name,
+        ));
     };
 
     for (key, value) in compute_windows(peak, &cfg.device_type, &cfg.defaults) {
@@ -456,24 +503,29 @@ async fn handle_sweep_timing(
         format!("Sweep timing for {device_name}: peak at sample {peak:.1}, windows updated"),
         Some(device_name.to_string()),
     );
+    Ok(())
 }
 
+/// Best-effort: attempts every write and notifies per failure, but still reports
+/// overall success (matching the legacy behaviour), so it returns `Ok`.
 async fn handle_restore_defaults(
     device_name: &str,
     state: &AppState,
     broadcaster: &Broadcaster,
-) {
+) -> Result<(), CommandError> {
     let pvs_and_defaults = {
         let state_read = state.read().await;
-        let Some(device) = state_read.devices.iter().find(|d| d.name == device_name) else {
-            error!("Device {device_name} not found");
-            return;
+        let Some(device) = state_read.device(device_name) else {
+            return Err(CommandError::for_device(
+                format!("Device {device_name} not found"),
+                device_name,
+            ));
         };
         let sensitivity_index = device.current_sensitivity;
 
         let mut result: Vec<(String, f64)> = Vec::new();
         for (key, pv_name) in &device.config.pvs {
-            if key == "charge" {
+            if key == keys::CHARGE {
                 continue;
             }
             if let Some(default) = device.config.defaults.get(key) {
@@ -486,10 +538,8 @@ async fn handle_restore_defaults(
 
     for (pv_name, value) in &pvs_and_defaults {
         if let Err(e) = epics::caput(pv_name, *value).await {
-            error!("Failed to restore {pv_name}: {e}");
-            broadcast_notification(
+            notify_error(
                 broadcaster,
-                NotificationLevel::Error,
                 format!("Failed to restore {pv_name}: {e}"),
                 Some(device_name.to_string()),
             );
@@ -502,20 +552,26 @@ async fn handle_restore_defaults(
         format!("Restored defaults for {device_name}"),
         Some(device_name.to_string()),
     );
+    Ok(())
 }
 
+/// Best-effort across all non-DQ devices; see `handle_restore_defaults`.
 async fn handle_clear_calibration(
     state: &AppState,
     broadcaster: &Broadcaster,
-) {
+) -> Result<(), CommandError> {
     let devices_info: Vec<(String, String, u8)> = {
         let state_read = state.read().await;
         state_read
             .devices
             .iter()
-            .filter(|d| d.config.device_type != DeviceType::Dq && d.config.device_type != DeviceType::Ict)
+            .filter(|d| {
+                d.config.device_type != DeviceType::Dq && d.config.device_type != DeviceType::Ict
+            })
             .map(|d| {
-                let level = d.config.sensitivities
+                let level = d
+                    .config
+                    .sensitivities
                     .get(d.current_sensitivity)
                     .copied()
                     .unwrap_or(3);
@@ -527,10 +583,8 @@ async fn handle_clear_calibration(
     for (name, ip, level) in &devices_info {
         let settings = hardware::settings_for_clear_calibration(*level);
         if let Err(e) = hardware::send_settings(ip, &settings).await {
-            error!("Failed to clear calibration for {name}: {e}");
-            broadcast_notification(
+            notify_error(
                 broadcaster,
-                NotificationLevel::Error,
                 format!("Failed to clear calibration for {name}: {e}"),
                 Some(name.clone()),
             );
@@ -543,13 +597,10 @@ async fn handle_clear_calibration(
         "Cleared calibration mode for all devices".to_string(),
         None,
     );
+    Ok(())
 }
 
-async fn handle_set_buffer_size(
-    size: usize,
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_set_buffer_size(size: usize, state: &AppState, broadcaster: &Broadcaster) {
     let size = size.clamp(10, 10000);
     {
         let mut state_write = state.write().await;
@@ -559,26 +610,18 @@ async fn handle_set_buffer_size(
         }
     }
 
-    let msg = ServerMessage::BufferSizeChanged { size };
-    if let Ok(json) = serde_json::to_string(&msg) {
-        let _ = broadcaster.send(json);
-    }
+    send_message(broadcaster, &ServerMessage::BufferSizeChanged { size });
+    // Resizing may drop points, so reset every client's buffers to match.
+    broadcast_chart_reset(state, broadcaster).await;
 }
 
-async fn handle_set_device_order(
-    order: Vec<String>,
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_set_device_order(order: Vec<String>, state: &AppState, broadcaster: &Broadcaster) {
     {
         let mut state_write = state.write().await;
         state_write.device_order = order.clone();
     }
 
-    let msg = ServerMessage::DeviceOrderChanged { order };
-    if let Ok(json) = serde_json::to_string(&msg) {
-        let _ = broadcaster.send(json);
-    }
+    send_message(broadcaster, &ServerMessage::DeviceOrderChanged { order });
 }
 
 #[cfg(test)]
@@ -612,22 +655,35 @@ mod tests {
     #[test]
     fn compute_windows_wcm_sets_peak_and_base() {
         // WCM defaults from config: peak_low=1035, peak_high=1037, base_low=1025, base_high=1027
-        let d = WindowDefaults { peak_low: 1035, peak_high: 1037, base_low: 1025, base_high: 1027 };
+        let d = WindowDefaults {
+            peak_low: 1035,
+            peak_high: 1037,
+            base_low: 1025,
+            base_high: 1027,
+        };
         let windows = compute_windows(1040.0, &DeviceType::Wcm, &d);
         // peak_offset = (1037-1035)/2 = 1; anchor = 1039
-        assert_eq!(windows, vec![
-            ("peak_low", 1039),
-            ("peak_high", 1041),
-            // base window sits 10 samples (peak_low_def - base_low_def) ahead of the peak window
-            ("base_low", 1029),
-            ("base_high", 1029),
-        ]);
+        assert_eq!(
+            windows,
+            vec![
+                ("peak_low", 1039),
+                ("peak_high", 1041),
+                // base window sits 10 samples (peak_low_def - base_low_def) ahead of the peak window
+                ("base_low", 1029),
+                ("base_high", 1029),
+            ]
+        );
     }
 
     #[test]
     fn compute_windows_fcup_peak_only() {
         // FCUP defaults: peak_low=1040, peak_high=1046
-        let d = WindowDefaults { peak_low: 1040, peak_high: 1046, base_low: 200, base_high: 800 };
+        let d = WindowDefaults {
+            peak_low: 1040,
+            peak_high: 1046,
+            base_low: 200,
+            base_high: 800,
+        };
         let windows = compute_windows(1000.0, &DeviceType::Fcup, &d);
         // peak_offset = (1046-1040)/2 = 3
         assert_eq!(windows, vec![("peak_low", 997), ("peak_high", 1003)]);

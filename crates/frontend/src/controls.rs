@@ -1,6 +1,26 @@
-use shared::messages::{ChartSnapshot, ClientMessage, DeviceStatus, DeviceType, Stats};
+use shared::messages::{ClientMessage, DeviceStatus, DeviceType, Stats};
 
-use crate::app::{DisplayFilter, YAxisScale};
+use crate::app::{DeviceChart, DisplayFilter, YAxisScale, YAxisState};
+use crate::util::{hms, status_color};
+
+/// A coloured status dot (`●`) with a context-dependent hover explanation.
+fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool, tip_ok: &str, tip_bad: &str) {
+    ui.colored_label(status_color(ok), label)
+        .on_hover_text(if ok { tip_ok } else { tip_bad });
+}
+
+/// A labelled button that pushes a lazily-built message when clicked.
+fn action_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    tip: &str,
+    out_msgs: &mut Vec<ClientMessage>,
+    make_msg: impl FnOnce() -> ClientMessage,
+) {
+    if ui.button(label).on_hover_text(tip).clicked() {
+        out_msgs.push(make_msg());
+    }
+}
 
 /// Draw filter controls for device types and individual devices
 pub fn draw_filter_controls(
@@ -33,72 +53,69 @@ pub fn draw_filter_controls(
         });
 }
 
-/// Draw controls for a single device
+/// Draw controls for a single device. Returns `true` if the user reordered devices
+/// (via the Up/Dn buttons), so the caller can broadcast the new order.
 pub fn draw_device_controls(
     ui: &mut egui::Ui,
     device: &DeviceStatus,
     out_msgs: &mut Vec<ClientMessage>,
     index: usize,
     total: usize,
-    device_order: &mut Vec<String>,
-) {
+    device_order: &mut [String],
+) -> bool {
+    let mut reordered = false;
     ui.group(|ui: &mut egui::Ui| {
         ui.horizontal(|ui: &mut egui::Ui| {
-            let epics_color = if device.connected {
-                egui::Color32::GREEN
-            } else {
-                egui::Color32::RED
-            };
-            ui.colored_label(epics_color, "E●")
-                .on_hover_text(if device.connected {
-                    "EPICS Channel Access: receiving data"
-                } else {
-                    "EPICS Channel Access: no data"
-                });
-            if device.device_type != DeviceType::Ict {
-                let fe_color = if device.fe_alive {
-                    egui::Color32::GREEN
-                } else {
-                    egui::Color32::RED
-                };
-                ui.colored_label(fe_color, "FE●")
-                    .on_hover_text(if device.fe_alive {
-                        "Front-end hardware box: reachable"
-                    } else {
-                        "Front-end hardware box: unreachable"
-                    });
-            }
-            ui.label(
-                egui::RichText::new(&device.name)
-                    .strong()
-                    .size(13.0),
+            status_dot(
+                ui,
+                "E●",
+                device.connected,
+                "EPICS Channel Access: receiving data",
+                "EPICS Channel Access: no data",
             );
+            // ICTs have no front-end box, so there is no reachability to show.
+            if device.device_type != DeviceType::Ict {
+                status_dot(
+                    ui,
+                    "FE●",
+                    device.fe_alive,
+                    "Front-end hardware box: reachable",
+                    "Front-end hardware box: unreachable",
+                );
+            }
+            ui.label(egui::RichText::new(&device.name).strong().size(13.0));
             ui.label(format!("({:?})", device.device_type));
             if device.last_data_time > 0.0 {
-                let secs = device.last_data_time as i64;
-                let total = secs.rem_euclid(86400);
-                let h = total / 3600;
-                let m = (total % 3600) / 60;
-                let s = total % 60;
                 ui.label(
-                    egui::RichText::new(format!("Last: {h:02}:{m:02}:{s:02}"))
+                    egui::RichText::new(format!("Last: {}", hms(device.last_data_time)))
                         .size(10.0)
                         .weak(),
                 );
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui: &mut egui::Ui| {
-                if index + 1 < total {
-                    if ui.small_button("Dn").on_hover_text("Move device down in display order").clicked() {
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui: &mut egui::Ui| {
+                    if index + 1 < total
+                        && ui
+                            .small_button("Dn")
+                            .on_hover_text("Move device down in display order")
+                            .clicked()
+                    {
                         device_order.swap(index, index + 1);
+                        reordered = true;
                     }
-                }
-                if index > 0 {
-                    if ui.small_button("Up").on_hover_text("Move device up in display order").clicked() {
+                    if index > 0
+                        && ui
+                            .small_button("Up")
+                            .on_hover_text("Move device up in display order")
+                            .clicked()
+                    {
                         device_order.swap(index, index - 1);
+                        reordered = true;
                     }
-                }
-            });
+                },
+            );
         });
 
         // Sensitivity selector (only for devices with sensitivities)
@@ -121,58 +138,67 @@ pub fn draw_device_controls(
         ui.horizontal(|ui: &mut egui::Ui| {
             // Device-specific buttons (ICTs only get Restore Defaults)
             if device.device_type == DeviceType::Wcm {
-                if ui.button("Zero WCM")
-                    .on_hover_text("Zero the WCM offset (corrB). Beam must be OFF but RF must be ON.")
-                    .clicked()
-                {
-                    out_msgs.push(ClientMessage::ZeroWCM {
+                action_button(
+                    ui,
+                    "Zero WCM",
+                    "Zero the WCM offset (corrB). Beam must be OFF but RF must be ON.",
+                    out_msgs,
+                    || ClientMessage::ZeroWCM {
                         device: device.name.clone(),
-                    });
-                }
+                    },
+                );
             }
 
+            // Sweep timing needs a digitizer peak window: not applicable to DQ or ICT.
             if device.device_type != DeviceType::Dq && device.device_type != DeviceType::Ict {
-                if ui.button("Sweep Timing")
-                    .on_hover_text("Sweep timing window to find optimal peak. Beam must be ON the device.")
-                    .clicked()
-                {
-                    out_msgs.push(ClientMessage::SweepTiming {
+                action_button(
+                    ui,
+                    "Sweep Timing",
+                    "Sweep timing window to find optimal peak. Beam must be ON the device.",
+                    out_msgs,
+                    || ClientMessage::SweepTiming {
                         device: device.name.clone(),
-                    });
-                }
+                    },
+                );
             }
 
-            // Build defaults tooltip
-            let defaults_tip = if device.defaults.is_empty() {
-                "Restore all PV defaults for this device".to_string()
-            } else {
-                let mut lines: Vec<String> = device.defaults
-                    .iter()
-                    .filter(|(k, _)| k.as_str() != "charge")
-                    .map(|(k, v)| format!("{k}: {v}"))
-                    .collect();
-                lines.sort();
-                format!("Restore defaults:\n{}", lines.join("\n"))
-            };
-            if ui.button("Restore Defaults")
-                .on_hover_text(defaults_tip)
-                .clicked()
-            {
-                out_msgs.push(ClientMessage::RestoreDefaults {
+            action_button(
+                ui,
+                "Restore Defaults",
+                &restore_defaults_tooltip(device),
+                out_msgs,
+                || ClientMessage::RestoreDefaults {
                     device: device.name.clone(),
-                });
-            }
+                },
+            );
 
-            if ui.button("Clear")
-                .on_hover_text("Empty this device's rolling data buffer")
-                .clicked()
-            {
-                out_msgs.push(ClientMessage::ClearBuffer {
+            action_button(
+                ui,
+                "Clear",
+                "Empty this device's rolling data buffer",
+                out_msgs,
+                || ClientMessage::ClearBuffer {
                     device: Some(device.name.clone()),
-                });
-            }
+                },
+            );
         });
     });
+    reordered
+}
+
+/// Build the "Restore Defaults" hover tooltip listing each PV's default value.
+fn restore_defaults_tooltip(device: &DeviceStatus) -> String {
+    if device.defaults.is_empty() {
+        return "Restore all PV defaults for this device".to_string();
+    }
+    let mut lines: Vec<String> = device
+        .defaults
+        .iter()
+        .filter(|(k, _)| k.as_str() != "charge")
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect();
+    lines.sort();
+    format!("Restore defaults:\n{}", lines.join("\n"))
 }
 
 /// Draw global controls
@@ -182,16 +208,20 @@ pub fn draw_global_controls(
     buffer_size_str: &mut String,
     out_msgs: &mut Vec<ClientMessage>,
     frozen_stats: &mut Option<Vec<(String, Stats)>>,
-    snapshots: &[ChartSnapshot],
-    y_scale: &mut YAxisScale,
-    y_min_str: &mut String,
-    y_max_str: &mut String,
+    charts: &[DeviceChart],
+    y_axis: &mut YAxisState,
 ) {
+    let YAxisState {
+        scale: y_scale,
+        min_str: y_min_str,
+        max_str: y_max_str,
+    } = y_axis;
     ui.horizontal(|ui: &mut egui::Ui| {
         if ui.button("Clear Calibration (All)").clicked() {
             out_msgs.push(ClientMessage::ClearCalibration);
         }
-        if ui.button("Clear Data (All)")
+        if ui
+            .button("Clear Data (All)")
             .on_hover_text("Empty the rolling data buffers for all devices")
             .clicked()
         {
@@ -213,7 +243,12 @@ pub fn draw_global_controls(
         }
         ui.separator();
         let is_frozen = frozen_stats.is_some();
-        if ui.button(if is_frozen { "Unfreeze Stats" } else { "Freeze Stats" })
+        if ui
+            .button(if is_frozen {
+                "Unfreeze Stats"
+            } else {
+                "Freeze Stats"
+            })
             .on_hover_text(if is_frozen {
                 "Resume live statistics updates"
             } else {
@@ -225,9 +260,9 @@ pub fn draw_global_controls(
                 *frozen_stats = None;
             } else {
                 *frozen_stats = Some(
-                    snapshots
+                    charts
                         .iter()
-                        .map(|s| (s.device_name.clone(), s.stats.clone()))
+                        .map(|c| (c.name.clone(), c.stats.clone()))
                         .collect(),
                 );
             }
@@ -247,18 +282,29 @@ pub fn draw_global_controls(
         egui::ComboBox::from_id_salt("y_axis_scale")
             .selected_text(current_label)
             .show_ui(ui, |ui| {
-                if ui.selectable_label(matches!(y_scale, YAxisScale::Auto), "Auto").clicked() {
+                if ui
+                    .selectable_label(matches!(y_scale, YAxisScale::Auto), "Auto")
+                    .clicked()
+                {
                     *y_scale = YAxisScale::Auto;
                 }
-                if ui.selectable_label(matches!(y_scale, YAxisScale::ZeroBased), "Zero-based").clicked() {
+                if ui
+                    .selectable_label(matches!(y_scale, YAxisScale::ZeroBased), "Zero-based")
+                    .clicked()
+                {
                     *y_scale = YAxisScale::ZeroBased;
                 }
-                if ui.selectable_label(matches!(y_scale, YAxisScale::Manual { .. }), "Manual").clicked() {
-                    if !matches!(y_scale, YAxisScale::Manual { .. }) {
-                        *y_scale = YAxisScale::Manual { min: 0.0, max: 100.0 };
-                        *y_min_str = "0".to_string();
-                        *y_max_str = "100".to_string();
-                    }
+                if ui
+                    .selectable_label(matches!(y_scale, YAxisScale::Manual { .. }), "Manual")
+                    .clicked()
+                    && !matches!(y_scale, YAxisScale::Manual { .. })
+                {
+                    *y_scale = YAxisScale::Manual {
+                        min: 0.0,
+                        max: 100.0,
+                    };
+                    *y_min_str = "0".to_string();
+                    *y_max_str = "100".to_string();
                 }
             });
 
@@ -269,7 +315,9 @@ pub fn draw_global_controls(
             let max_resp = ui.add(egui::TextEdit::singleline(y_max_str).desired_width(50.0));
 
             if min_resp.lost_focus() || max_resp.lost_focus() {
-                if let (Ok(new_min), Ok(new_max)) = (y_min_str.parse::<f64>(), y_max_str.parse::<f64>()) {
+                if let (Ok(new_min), Ok(new_max)) =
+                    (y_min_str.parse::<f64>(), y_max_str.parse::<f64>())
+                {
                     if new_min < new_max {
                         *min = new_min;
                         *max = new_max;

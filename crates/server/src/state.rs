@@ -5,7 +5,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
 
-/// Rolling buffer of (timestamp_secs, value) pairs with fixed capacity
+/// Rolling buffer of (timestamp_secs, value) pairs with fixed capacity.
+///
+/// Running `sum`/`sum_sq` are maintained on every push/pop so `statistics()` is O(1)
+/// for mean and RMSD. Min/max can't be maintained in O(1) under a sliding window, so
+/// they are recomputed lazily — but only when the current extremum is evicted, which
+/// is uncommon in a monotonic-ish charge signal.
 #[derive(Clone, Debug)]
 pub struct RollingBuffer {
     data: VecDeque<[f64; 2]>,
@@ -13,6 +18,12 @@ pub struct RollingBuffer {
     /// Monotonic count of all pushes ever, independent of capacity. Used to detect
     /// "N fresh samples have arrived" even when the buffer is smaller than N.
     total_pushed: u64,
+    sum: f64,
+    sum_sq: f64,
+    /// Cached extrema; valid only when `!extrema_dirty` and the buffer is non-empty.
+    min: f64,
+    max: f64,
+    extrema_dirty: bool,
 }
 
 impl RollingBuffer {
@@ -21,15 +32,42 @@ impl RollingBuffer {
             data: VecDeque::with_capacity(capacity),
             capacity,
             total_pushed: 0,
+            sum: 0.0,
+            sum_sq: 0.0,
+            min: f64::INFINITY,
+            max: f64::NEG_INFINITY,
+            extrema_dirty: false,
         }
     }
 
     pub fn push(&mut self, timestamp: f64, value: f64) {
         if self.data.len() >= self.capacity {
-            self.data.pop_front();
+            self.evict_front();
         }
         self.data.push_back([timestamp, value]);
+        self.sum += value;
+        self.sum_sq += value * value;
+        // Resolve the extrema now (while we hold `&mut self`) so `statistics()` can
+        // stay `&self` and simply read the cached values.
+        if self.extrema_dirty {
+            self.recompute_extrema();
+        } else {
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        }
         self.total_pushed = self.total_pushed.wrapping_add(1);
+    }
+
+    /// Drop the oldest sample, keeping the running accumulators in sync.
+    fn evict_front(&mut self) {
+        if let Some([_, v]) = self.data.pop_front() {
+            self.sum -= v;
+            self.sum_sq -= v * v;
+            // If we just removed a cached extremum, it must be recomputed.
+            if v == self.min || v == self.max {
+                self.extrema_dirty = true;
+            }
+        }
     }
 
     /// Total number of values ever pushed, regardless of the rolling capacity.
@@ -51,39 +89,73 @@ impl RollingBuffer {
     pub fn set_capacity(&mut self, new_capacity: usize) {
         self.capacity = new_capacity;
         while self.data.len() > new_capacity {
-            self.data.pop_front();
+            self.evict_front();
         }
+        if self.extrema_dirty {
+            self.recompute_extrema();
+        }
+    }
+
+    /// Recompute cached min/max from scratch. Called only when the previous extremum
+    /// was evicted (`extrema_dirty`).
+    fn recompute_extrema(&mut self) {
+        self.min = f64::INFINITY;
+        self.max = f64::NEG_INFINITY;
+        for p in &self.data {
+            self.min = self.min.min(p[1]);
+            self.max = self.max.max(p[1]);
+        }
+        self.extrema_dirty = false;
     }
 
     pub fn statistics(&self) -> Stats {
         if self.data.is_empty() {
             return Stats::default();
         }
-        let mut min = f64::INFINITY;
-        let mut max = f64::NEG_INFINITY;
-        let mut sum = 0.0;
-        let mut sum_sq = 0.0;
         let n = self.data.len() as f64;
-
-        for p in &self.data {
-            let v = p[1];
-            sum += v;
-            sum_sq += v * v;
-            if v < min { min = v; }
-            if v > max { max = v; }
+        let mean = self.sum / n;
+        let rmsd = ((self.sum_sq / n) - (mean * mean)).max(0.0).sqrt();
+        // The `&mut` operations (push/set_capacity/clear) always resolve dirty extrema,
+        // so the cached values are current here. Fall back defensively just in case.
+        let (min, max) = if self.extrema_dirty {
+            self.data
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), p| {
+                    (mn.min(p[1]), mx.max(p[1]))
+                })
+        } else {
+            (self.min, self.max)
+        };
+        Stats {
+            mean,
+            min,
+            max,
+            rmsd,
         }
-
-        let mean = sum / n;
-        let rmsd = ((sum_sq / n) - (mean * mean)).max(0.0).sqrt();
-        Stats { mean, min, max, rmsd }
     }
 
     pub fn as_points(&self) -> Vec<[f64; 2]> {
         self.data.iter().copied().collect()
     }
 
+    /// The most recent `n` points (fewer if the buffer is smaller), oldest-first.
+    /// Used to build incremental chart deltas.
+    pub fn last_points(&self, n: usize) -> Vec<[f64; 2]> {
+        let take = n.min(self.data.len());
+        self.data
+            .iter()
+            .skip(self.data.len() - take)
+            .copied()
+            .collect()
+    }
+
     pub fn clear(&mut self) {
         self.data.clear();
+        self.sum = 0.0;
+        self.sum_sq = 0.0;
+        self.min = f64::INFINITY;
+        self.max = f64::NEG_INFINITY;
+        self.extrema_dirty = false;
     }
 }
 
@@ -103,6 +175,43 @@ pub struct InnerState {
     pub devices: Vec<DeviceState>,
     pub buffer_size: usize,
     pub device_order: Vec<String>,
+    /// Device name -> index into `devices`, so lookups by name are O(1) instead of a
+    /// linear scan. `devices` is built once at startup and never reordered (the UI
+    /// reorders `device_order`, not `devices`), so this stays valid for the process life.
+    name_index: std::collections::HashMap<String, usize>,
+}
+
+impl InnerState {
+    /// Build state from the device list, deriving the name index. `devices` must not
+    /// be reordered afterwards or the index (and EPICS/ping index routing) go stale.
+    pub fn new(devices: Vec<DeviceState>, buffer_size: usize, device_order: Vec<String>) -> Self {
+        let name_index = devices
+            .iter()
+            .enumerate()
+            .map(|(i, d)| (d.name.clone(), i))
+            .collect();
+        Self {
+            devices,
+            buffer_size,
+            device_order,
+            name_index,
+        }
+    }
+
+    /// Index of a device by name, if present.
+    pub fn device_index(&self, name: &str) -> Option<usize> {
+        self.name_index.get(name).copied()
+    }
+
+    /// Shared reference to a device by name.
+    pub fn device(&self, name: &str) -> Option<&DeviceState> {
+        self.device_index(name).map(|i| &self.devices[i])
+    }
+
+    /// Mutable reference to a device by name.
+    pub fn device_mut(&mut self, name: &str) -> Option<&mut DeviceState> {
+        self.device_index(name).map(|i| &mut self.devices[i])
+    }
 }
 
 pub type AppState = Arc<RwLock<InnerState>>;
@@ -156,6 +265,67 @@ impl PersistedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reference statistics computed by a full scan, to check the incremental ones.
+    fn brute_stats(points: &[[f64; 2]]) -> Stats {
+        if points.is_empty() {
+            return Stats::default();
+        }
+        let n = points.len() as f64;
+        let sum: f64 = points.iter().map(|p| p[1]).sum();
+        let sum_sq: f64 = points.iter().map(|p| p[1] * p[1]).sum();
+        let mean = sum / n;
+        Stats {
+            mean,
+            min: points.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+            max: points
+                .iter()
+                .map(|p| p[1])
+                .fold(f64::NEG_INFINITY, f64::max),
+            rmsd: ((sum_sq / n) - mean * mean).max(0.0).sqrt(),
+        }
+    }
+
+    #[test]
+    fn incremental_stats_match_brute_force_through_eviction() {
+        // Sequence chosen so the running max (100) and min (1) get evicted, exercising
+        // the lazy extrema recompute path.
+        let mut buf = RollingBuffer::new(3);
+        let seq = [1.0, 100.0, 50.0, 2.0, 3.0, 100.0, 4.0];
+        for (i, v) in seq.iter().enumerate() {
+            buf.push(i as f64, *v);
+            let got = buf.statistics();
+            let expected = brute_stats(&buf.as_points());
+            assert!((got.mean - expected.mean).abs() < 1e-9, "mean at step {i}");
+            assert!((got.min - expected.min).abs() < 1e-9, "min at step {i}");
+            assert!((got.max - expected.max).abs() < 1e-9, "max at step {i}");
+            assert!((got.rmsd - expected.rmsd).abs() < 1e-9, "rmsd at step {i}");
+        }
+    }
+
+    #[test]
+    fn last_points_returns_newest_suffix() {
+        let mut buf = RollingBuffer::new(10);
+        for i in 0..5 {
+            buf.push(i as f64, (i * 10) as f64);
+        }
+        assert_eq!(buf.last_points(2), vec![[3.0, 30.0], [4.0, 40.0]]);
+        // Requesting more than buffered yields everything.
+        assert_eq!(buf.last_points(99).len(), 5);
+    }
+
+    #[test]
+    fn clear_resets_running_stats() {
+        let mut buf = RollingBuffer::new(10);
+        for i in 0..5 {
+            buf.push(i as f64, i as f64);
+        }
+        buf.clear();
+        assert_eq!(buf.statistics().mean, 0.0);
+        buf.push(0.0, 7.0);
+        assert_eq!(buf.statistics().mean, 7.0);
+        assert_eq!(buf.statistics().max, 7.0);
+    }
 
     #[test]
     fn rolling_buffer_push_and_capacity() {

@@ -6,12 +6,23 @@ edition = "2021"
 [dependencies]
 shared = { path = "../shared" }
 axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "process",
+    "io-util",
+] }
 tower-http = { version = "0.6", features = ["fs", "cors"] }
-epicars = { git = "https://github.com/ndevenish/epicars.git" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-serde_yaml = "0.9"
+# Pinned to a specific commit for reproducible builds (unpinned git deps float).
+epicars = { git = "https://github.com/ndevenish/epicars.git", rev = "34d04f613286fd09fac0aa6b804996345ab194e9" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# serde_yaml 0.9 is deprecated/unmaintained upstream; serde_norway is a maintained
+# drop-in fork with the same API.
+serde_norway = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

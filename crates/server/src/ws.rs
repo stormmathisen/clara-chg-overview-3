@@ -1,7 +1,8 @@
 use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use shared::messages::{
-    ChartSnapshot, ClientMessage, DeviceStatus, Notification, NotificationLevel, ServerMessage,
+    ChartSnapshot, ClientMessage, DeviceDelta, DeviceStatus, Notification, NotificationLevel,
+    ServerMessage,
 };
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -12,12 +13,12 @@ use crate::audit::AuditLog;
 use crate::commands;
 use crate::state::{AppState, InnerState};
 
-const BROADCAST_CHANNEL_CAPACITY: usize = 2048;
-const BROADCAST_INTERVAL_MS: u64 = 100;
-const MAX_COMMANDS_PER_SEC: usize = 10;
+use crate::consts::{BROADCAST_CHANNEL_CAPACITY, BROADCAST_INTERVAL, MAX_COMMANDS_PER_SEC};
 
-/// Broadcaster for server messages to all connected clients
-pub type Broadcaster = broadcast::Sender<String>;
+/// Broadcaster for server messages to all connected clients. Payloads are `Arc<str>`
+/// so the broadcast channel hands every client a shared reference instead of cloning
+/// the JSON per subscriber.
+pub type Broadcaster = broadcast::Sender<Arc<str>>;
 
 /// Create a new broadcaster
 pub fn new_broadcaster() -> Broadcaster {
@@ -25,18 +26,40 @@ pub fn new_broadcaster() -> Broadcaster {
     tx
 }
 
-/// Build chart data snapshots from current state
-pub fn build_chart_data(state: &InnerState) -> ServerMessage {
+/// Serialize a `ServerMessage` once and broadcast it to all connected clients.
+/// Send errors (no subscribers) and the practically-impossible serialize error are
+/// ignored — these message types always serialize.
+pub fn send_message(broadcaster: &Broadcaster, msg: &ServerMessage) {
+    if let Ok(json) = serde_json::to_string(msg) {
+        let _ = broadcaster.send(Arc::from(json));
+    }
+}
+
+/// Build a full chart snapshot (every device's whole buffer). Sent per-client on
+/// connect and broadcast as a reset after a buffer clear/resize.
+pub fn build_chart_snapshot(state: &InnerState) -> ServerMessage {
     let snapshots: Vec<ChartSnapshot> = state
         .devices
         .iter()
-        .map(|d| ChartSnapshot {
-            device_name: d.name.clone(),
+        .enumerate()
+        .map(|(i, d)| ChartSnapshot {
+            device: i,
             points: d.buffer.as_points(),
             stats: d.buffer.statistics(),
+            cursor: d.buffer.total_pushed(),
         })
         .collect();
     ServerMessage::ChartData { snapshots }
+}
+
+/// Broadcast a full chart snapshot to all clients — used after a structural change
+/// (buffer clear / resize) that a per-device append delta can't express.
+pub async fn broadcast_chart_reset(state: &AppState, broadcaster: &Broadcaster) {
+    let msg = {
+        let s = state.read().await;
+        build_chart_snapshot(&s)
+    };
+    send_message(broadcaster, &msg);
 }
 
 /// Build full init message from current state
@@ -45,7 +68,9 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
         .devices
         .iter()
         .map(|d| {
-            let defaults: std::collections::HashMap<String, f64> = d.config.defaults
+            let defaults: std::collections::HashMap<String, f64> = d
+                .config
+                .defaults
                 .iter()
                 .map(|(k, v)| (k.clone(), v.for_sensitivity(d.current_sensitivity)))
                 .collect();
@@ -69,18 +94,49 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
     }
 }
 
-/// Spawn the periodic chart data broadcast task (10 Hz)
+/// Spawn the periodic chart broadcast task (10 Hz). It sends incremental
+/// `ChartDelta`s — only the points pushed since the previous tick — instead of the
+/// whole buffer, cutting steady-state bandwidth by roughly the buffer size.
 pub fn spawn_chart_broadcaster(state: AppState, broadcaster: Broadcaster) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(BROADCAST_INTERVAL_MS));
+        let mut interval = tokio::time::interval(BROADCAST_INTERVAL);
+        // Per-device cursor (total_pushed) already reflected in what clients have.
+        let mut prev_cursors: Vec<u64> = Vec::new();
         loop {
             interval.tick().await;
-            let state_read = state.read().await;
-            let msg = build_chart_data(&state_read);
-            drop(state_read);
-            if let Ok(json) = serde_json::to_string(&msg) {
-                // Ignore send errors — means no subscribers
-                let _ = broadcaster.send(json);
+
+            // Building/serializing point payloads is only worth it with subscribers,
+            // but we still advance the cursors either way so a late-joining client
+            // doesn't trigger a giant catch-up delta (it gets a full snapshot instead).
+            let have_receivers = broadcaster.receiver_count() > 0;
+
+            let updates = {
+                let s = state.read().await;
+                if prev_cursors.len() != s.devices.len() {
+                    prev_cursors = vec![0; s.devices.len()];
+                }
+                let mut updates: Vec<DeviceDelta> = Vec::new();
+                for (i, d) in s.devices.iter().enumerate() {
+                    let current = d.buffer.total_pushed();
+                    if current == prev_cursors[i] {
+                        continue;
+                    }
+                    if have_receivers {
+                        let new_count = current.saturating_sub(prev_cursors[i]) as usize;
+                        updates.push(DeviceDelta {
+                            device: i,
+                            new_points: d.buffer.last_points(new_count),
+                            stats: d.buffer.statistics(),
+                            cursor: current,
+                        });
+                    }
+                    prev_cursors[i] = current;
+                }
+                updates
+            };
+
+            if have_receivers && !updates.is_empty() {
+                send_message(&broadcaster, &ServerMessage::ChartDelta { updates });
             }
         }
     });
@@ -97,26 +153,38 @@ pub async fn handle_ws(
 
     audit.log_connect("ws-client");
 
-    // Send init message
+    // Subscribe BEFORE snapshotting so no delta produced during the handshake is
+    // lost: any delta covering points already in the snapshot is de-duplicated by
+    // the client via its per-device cursor.
+    let mut broadcast_rx = broadcaster.subscribe();
+
+    // Send the metadata (Init) and a full chart snapshot up front, so the client has
+    // the existing buffers before it starts applying deltas.
     {
         let state_read = state.read().await;
         let init_msg = build_init_message(&state_read);
-        if let Ok(json) = serde_json::to_string(&init_msg) {
+        let snapshot_msg = build_chart_snapshot(&state_read);
+        drop(state_read);
+        for msg in [init_msg, snapshot_msg] {
+            let Ok(json) = serde_json::to_string(&msg) else {
+                return;
+            };
             if ws_tx.send(Message::Text(json.into())).await.is_err() {
                 return;
             }
         }
     }
 
-    // Subscribe to broadcast channel
-    let mut broadcast_rx = broadcaster.subscribe();
-
     // Spawn a task to forward broadcast messages to this client
     let mut send_task = tokio::spawn(async move {
         loop {
             match broadcast_rx.recv().await {
                 Ok(msg) => {
-                    if ws_tx.send(Message::Text(msg.into())).await.is_err() {
+                    if ws_tx
+                        .send(Message::Text(msg.as_ref().into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -191,8 +259,5 @@ pub fn broadcast_notification(
             .unwrap_or_default()
             .as_secs_f64(),
     };
-    let msg = ServerMessage::Notify(notification);
-    if let Ok(json) = serde_json::to_string(&msg) {
-        let _ = broadcaster.send(json);
-    }
+    send_message(broadcaster, &ServerMessage::Notify(notification));
 }

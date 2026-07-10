@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, claude_code]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  native:
+    name: Format, clippy, test (server + shared)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Clippy (server + shared)
+        # Frontend is a wasm-only target (pulls winit natively); lint it in the wasm job.
+        run: cargo clippy -p shared -p server --all-targets -- -D warnings
+      - name: Test (server + shared)
+        run: cargo test -p shared -p server
+
+  wasm:
+    name: Build frontend (wasm32)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (frontend, wasm32)
+        run: cargo clippy -p frontend --target wasm32-unknown-unknown -- -D warnings
+      - name: Install trunk
+        uses: jetli/trunk-action@v0.5.0
+        with:
+          version: latest
+      - name: Build frontend
+        run: cd crates/frontend && trunk build --release

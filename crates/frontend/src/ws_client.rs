@@ -93,8 +93,7 @@ impl WsClient {
                 self.connect(&self.url.clone());
                 if !self.connected {
                     self.reconnect_cooldown = self.reconnect_delay;
-                    self.reconnect_delay =
-                        (self.reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                    self.reconnect_delay = (self.reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
                 }
             }
         }

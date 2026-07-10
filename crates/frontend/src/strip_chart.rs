@@ -1,20 +1,23 @@
 use egui_plot::{AxisHints, Line, Plot, PlotPoints};
-use shared::messages::{ChartSnapshot, Stats};
+use shared::messages::Stats;
 
-use crate::app::YAxisScale;
+use crate::app::{DeviceChart, YAxisScale};
+use crate::util::hms;
 
 /// Draw a strip chart for a single device
-pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32, stats_override: Option<&Stats>, y_scale: &YAxisScale) {
-    let stats = stats_override.unwrap_or(&snapshot.stats);
+pub fn draw_strip_chart(
+    ui: &mut egui::Ui,
+    chart: &DeviceChart,
+    height: f32,
+    stats_override: Option<&Stats>,
+    y_scale: &YAxisScale,
+) {
+    let stats = stats_override.unwrap_or(&chart.stats);
     let frozen = stats_override.is_some();
 
     // Stats header
     ui.horizontal(|ui: &mut egui::Ui| {
-        ui.label(
-            egui::RichText::new(&snapshot.device_name)
-                .strong()
-                .size(14.0),
-        );
+        ui.label(egui::RichText::new(&chart.name).strong().size(14.0));
         if frozen {
             ui.colored_label(egui::Color32::YELLOW, "❄ FROZEN");
         }
@@ -22,19 +25,16 @@ pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32
         stats_label(ui, stats);
     });
 
-    // Plot
-    let points: PlotPoints = snapshot
-        .points
-        .iter()
-        .map(|p| [p[0], p[1]])
-        .collect();
+    // The rolling buffer is a (non-contiguous) VecDeque, so materialise the points
+    // into a Vec for egui_plot.
+    let points = PlotPoints::from(chart.buffer.points().iter().copied().collect::<Vec<_>>());
 
     let line = Line::new(points).color(egui::Color32::LIGHT_BLUE);
 
     let x_axes = vec![AxisHints::new_x().formatter(format_timestamp)];
     let y_axes = vec![AxisHints::new_y().label("Charge (pC)")];
 
-    let mut plot = Plot::new(&snapshot.device_name)
+    let mut plot = Plot::new(&chart.name)
         .height(height)
         .custom_x_axes(x_axes)
         .custom_y_axes(y_axes)
@@ -63,18 +63,12 @@ pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32
 
 fn format_timestamp(mark: egui_plot::GridMark, _range: &std::ops::RangeInclusive<f64>) -> String {
     let secs = mark.value as i64;
-    let remainder = mark.value - secs as f64;
-    let millis = (remainder * 1000.0) as u32;
-
-    // Convert POSIX timestamp to HH:MM:SS
-    let total_secs = secs.rem_euclid(86400);
-    let h = total_secs / 3600;
-    let m = (total_secs % 3600) / 60;
-    let s = total_secs % 60;
+    let millis = ((mark.value - secs as f64) * 1000.0) as u32;
+    let base = hms(mark.value);
     if millis > 0 {
-        format!("{h:02}:{m:02}:{s:02}.{millis:03}")
+        format!("{base}.{millis:03}")
     } else {
-        format!("{h:02}:{m:02}:{s:02}")
+        base
     }
 }
 

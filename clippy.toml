@@ -1,0 +1,4 @@
+# Clippy configuration for the workspace.
+# Keep functions from growing without bound; the hot command handlers are the
+# main offenders and are being split up in the cleanup pass.
+too-many-lines-threshold = 120

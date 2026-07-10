@@ -2,3 +2,21 @@
 members = ["crates/shared", "crates/server", "crates/frontend"]
 default-members = ["crates/shared", "crates/server"]
 resolver = "2"
+
+# Dependencies shared across more than one crate are centralised here so their
+# versions stay in lockstep. Individual crates opt in with `{ workspace = true }`.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Release builds: fat LTO + a single codegen unit shrink the native binary and,
+# more importantly, the WASM bundle; strip drops symbols. `opt-level = "s"`
+# optimises for size, which matters far more for the downloaded .wasm than the
+# handful of hot loops in the native server (all I/O-bound anyway).
+# NB: no `panic = "abort"` — the server relies on unwinding so a panic in one
+# connection/monitor task doesn't take down the whole process.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
