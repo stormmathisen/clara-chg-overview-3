@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::controls;
 use crate::strip_chart;
-use crate::util::{hms, notification_color, status_color};
+use crate::util::{glyph, hms, notification_color, status_color};
 use crate::ws_client::WsClient;
 
 /// Y-axis scaling mode for all strip charts
@@ -304,13 +304,14 @@ impl eframe::App for ChargeOverviewApp {
             ui.horizontal(|ui: &mut egui::Ui| {
                 ui.heading("CLARA Charge Overview");
                 ui.separator();
+                let status = if self.connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                };
                 ui.colored_label(
                     status_color(self.connected),
-                    if self.connected {
-                        "● Connected"
-                    } else {
-                        "● Disconnected"
-                    },
+                    format!("{} {status}", glyph::STATUS_DOT),
                 );
             });
             controls::draw_global_controls(
@@ -334,9 +335,9 @@ impl eframe::App for ChargeOverviewApp {
             }
             ui.horizontal(|ui: &mut egui::Ui| {
                 let (arrow, hint) = if self.history_open {
-                    ("⏷", "Hide notification history")
+                    (glyph::CHEVRON_DOWN, "Hide notification history")
                 } else {
-                    ("⏶", "Show notification history")
+                    (glyph::CHEVRON_UP, "Show notification history")
                 };
                 if ui.small_button(arrow).on_hover_text(hint).clicked() {
                     self.history_open = !self.history_open;
@@ -378,7 +379,7 @@ impl eframe::App for ChargeOverviewApp {
                                         ui.horizontal(|ui: &mut egui::Ui| {
                                             ui.dnd_drag_source(item_id, name.clone(), |ui| {
                                                 ui.label(
-                                                    egui::RichText::new("⠿")
+                                                    egui::RichText::new(glyph::DRAG_HANDLE)
                                                         .size(16.0)
                                                         .color(egui::Color32::GRAY),
                                                 )

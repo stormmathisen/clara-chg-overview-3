@@ -1,11 +1,11 @@
 use shared::messages::{ClientMessage, DeviceStatus, DeviceType, Stats};
 
 use crate::app::{DeviceChart, DisplayFilter, YAxisScale, YAxisState};
-use crate::util::{hms, status_color};
+use crate::util::{glyph, hms, status_color};
 
-/// A coloured status dot (`●`) with a context-dependent hover explanation.
-fn status_dot(ui: &mut egui::Ui, label: &str, ok: bool, tip_ok: &str, tip_bad: &str) {
-    ui.colored_label(status_color(ok), label)
+/// A coloured status dot with a context-dependent hover explanation.
+fn status_dot(ui: &mut egui::Ui, prefix: &str, ok: bool, tip_ok: &str, tip_bad: &str) {
+    ui.colored_label(status_color(ok), format!("{prefix}{}", glyph::STATUS_DOT))
         .on_hover_text(if ok { tip_ok } else { tip_bad });
 }
 
@@ -68,7 +68,7 @@ pub fn draw_device_controls(
         ui.horizontal(|ui: &mut egui::Ui| {
             status_dot(
                 ui,
-                "E●",
+                "E",
                 device.connected,
                 "EPICS Channel Access: receiving data",
                 "EPICS Channel Access: no data",
@@ -77,7 +77,7 @@ pub fn draw_device_controls(
             if device.device_type != DeviceType::Ict {
                 status_dot(
                     ui,
-                    "FE●",
+                    "FE",
                     device.fe_alive,
                     "Front-end hardware box: reachable",
                     "Front-end hardware box: unreachable",
