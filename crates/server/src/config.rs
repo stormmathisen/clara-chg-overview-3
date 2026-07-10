@@ -6,7 +6,7 @@ use std::path::Path;
 /// Load device configs from YAML file
 pub fn load_device_configs(path: &Path) -> anyhow::Result<HashMap<String, DeviceConfig>> {
     let contents = std::fs::read_to_string(path)?;
-    let configs: HashMap<String, DeviceConfig> = serde_yaml::from_str(&contents)?;
+    let configs: HashMap<String, DeviceConfig> = serde_norway::from_str(&contents)?;
 
     // Validate each device config
     for (name, config) in &configs {
@@ -28,7 +28,7 @@ pub fn load_device_configs(path: &Path) -> anyhow::Result<HashMap<String, Device
 /// Load network config from YAML file
 pub fn load_network_config(path: &Path) -> anyhow::Result<NetworkConfig> {
     let contents = std::fs::read_to_string(path)?;
-    let config: NetworkConfig = serde_yaml::from_str(&contents)?;
+    let config: NetworkConfig = serde_norway::from_str(&contents)?;
     Ok(config)
 }
 
