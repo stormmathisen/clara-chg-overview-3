@@ -54,11 +54,7 @@ async fn handle_set_sensitivity(
 ) {
     let (ip, sensitivity_level, corr_a_pv, corr_a_value, dq_info) = {
         let state_read = state.read().await;
-        let Some(device) = state_read
-            .devices
-            .iter()
-            .find(|d| d.name == device_name)
-        else {
+        let Some(device) = state_read.devices.iter().find(|d| d.name == device_name) else {
             error!("Device {device_name} not found");
             return;
         };
@@ -77,7 +73,11 @@ async fn handle_set_sensitivity(
         let ip = device.config.ip.clone();
 
         let corr_a_pv = device.config.pvs.get("corrA").cloned();
-        let corr_a_value = device.config.defaults.get("corrA").map(|d| d.for_sensitivity(index));
+        let corr_a_value = device
+            .config
+            .defaults
+            .get("corrA")
+            .map(|d| d.for_sensitivity(index));
 
         // If WCM, also need to set DQcal for the companion :DQ device
         let dq_info = if device.config.device_type == DeviceType::Wcm {
@@ -88,7 +88,11 @@ async fn handle_set_sensitivity(
                 .find(|d| d.name == dq_name)
                 .map(|dq| {
                     let pv = dq.config.pvs.get("DQcal").cloned();
-                    let val = dq.config.defaults.get("DQcal").map(|d| d.for_sensitivity(index));
+                    let val = dq
+                        .config
+                        .defaults
+                        .get("DQcal")
+                        .map(|d| d.for_sensitivity(index));
                     (pv, val)
                 })
         } else {
@@ -128,7 +132,11 @@ async fn handle_set_sensitivity(
     // Update state and broadcast
     {
         let mut state_write = state.write().await;
-        if let Some(device) = state_write.devices.iter_mut().find(|d| d.name == device_name) {
+        if let Some(device) = state_write
+            .devices
+            .iter_mut()
+            .find(|d| d.name == device_name)
+        {
             device.current_sensitivity = index;
         }
     }
@@ -157,11 +165,7 @@ const ZERO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// Poll interval while waiting for fresh readings.
 const ZERO_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-async fn handle_zero_wcm(
-    device_name: &str,
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_zero_wcm(device_name: &str, state: &AppState, broadcaster: &Broadcaster) {
     let corr_b_pv = {
         let state_read = state.read().await;
         let Some(device) = state_read.devices.iter().find(|d| d.name == device_name) else {
@@ -324,8 +328,16 @@ fn mean_peak_index(waveforms: &[Vec<f64>], find_max: bool) -> Option<f64> {
     let mut n = 0usize;
     for wf in waveforms {
         let Some((idx, _)) = wf.iter().copied().enumerate().reduce(|best, cur| {
-            let better = if find_max { cur.1 > best.1 } else { cur.1 < best.1 };
-            if better { cur } else { best }
+            let better = if find_max {
+                cur.1 > best.1
+            } else {
+                cur.1 < best.1
+            };
+            if better {
+                cur
+            } else {
+                best
+            }
         }) else {
             continue;
         };
@@ -351,17 +363,19 @@ fn compute_windows(
         ("peak_high", (peak + peak_offset as f64) as i64),
     ];
     if *device_type == DeviceType::Wcm {
-        out.push(("base_low", (anchor - (d.peak_low - d.base_low) as f64) as i64));
-        out.push(("base_high", (anchor - (d.peak_high - d.base_high) as f64) as i64));
+        out.push((
+            "base_low",
+            (anchor - (d.peak_low - d.base_low) as f64) as i64,
+        ));
+        out.push((
+            "base_high",
+            (anchor - (d.peak_high - d.base_high) as f64) as i64,
+        ));
     }
     out
 }
 
-async fn handle_sweep_timing(
-    device_name: &str,
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_sweep_timing(device_name: &str, state: &AppState, broadcaster: &Broadcaster) {
     // Gather config while holding the read lock briefly.
     let cfg = {
         let state_read = state.read().await;
@@ -370,7 +384,13 @@ async fn handle_sweep_timing(
             return;
         };
         let idx = device.current_sensitivity;
-        let def = |k: &str| device.config.defaults.get(k).map(|v| v.for_sensitivity(idx));
+        let def = |k: &str| {
+            device
+                .config
+                .defaults
+                .get(k)
+                .map(|v| v.for_sensitivity(idx))
+        };
 
         // peak_low/peak_high are required for every device type.
         let (Some(peak_low), Some(peak_high)) = (def("peak_low"), def("peak_high")) else {
@@ -458,11 +478,7 @@ async fn handle_sweep_timing(
     );
 }
 
-async fn handle_restore_defaults(
-    device_name: &str,
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_restore_defaults(device_name: &str, state: &AppState, broadcaster: &Broadcaster) {
     let pvs_and_defaults = {
         let state_read = state.read().await;
         let Some(device) = state_read.devices.iter().find(|d| d.name == device_name) else {
@@ -504,18 +520,19 @@ async fn handle_restore_defaults(
     );
 }
 
-async fn handle_clear_calibration(
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_clear_calibration(state: &AppState, broadcaster: &Broadcaster) {
     let devices_info: Vec<(String, String, u8)> = {
         let state_read = state.read().await;
         state_read
             .devices
             .iter()
-            .filter(|d| d.config.device_type != DeviceType::Dq && d.config.device_type != DeviceType::Ict)
+            .filter(|d| {
+                d.config.device_type != DeviceType::Dq && d.config.device_type != DeviceType::Ict
+            })
             .map(|d| {
-                let level = d.config.sensitivities
+                let level = d
+                    .config
+                    .sensitivities
                     .get(d.current_sensitivity)
                     .copied()
                     .unwrap_or(3);
@@ -545,11 +562,7 @@ async fn handle_clear_calibration(
     );
 }
 
-async fn handle_set_buffer_size(
-    size: usize,
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_set_buffer_size(size: usize, state: &AppState, broadcaster: &Broadcaster) {
     let size = size.clamp(10, 10000);
     {
         let mut state_write = state.write().await;
@@ -565,11 +578,7 @@ async fn handle_set_buffer_size(
     }
 }
 
-async fn handle_set_device_order(
-    order: Vec<String>,
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) {
+async fn handle_set_device_order(order: Vec<String>, state: &AppState, broadcaster: &Broadcaster) {
     {
         let mut state_write = state.write().await;
         state_write.device_order = order.clone();
@@ -612,22 +621,35 @@ mod tests {
     #[test]
     fn compute_windows_wcm_sets_peak_and_base() {
         // WCM defaults from config: peak_low=1035, peak_high=1037, base_low=1025, base_high=1027
-        let d = WindowDefaults { peak_low: 1035, peak_high: 1037, base_low: 1025, base_high: 1027 };
+        let d = WindowDefaults {
+            peak_low: 1035,
+            peak_high: 1037,
+            base_low: 1025,
+            base_high: 1027,
+        };
         let windows = compute_windows(1040.0, &DeviceType::Wcm, &d);
         // peak_offset = (1037-1035)/2 = 1; anchor = 1039
-        assert_eq!(windows, vec![
-            ("peak_low", 1039),
-            ("peak_high", 1041),
-            // base window sits 10 samples (peak_low_def - base_low_def) ahead of the peak window
-            ("base_low", 1029),
-            ("base_high", 1029),
-        ]);
+        assert_eq!(
+            windows,
+            vec![
+                ("peak_low", 1039),
+                ("peak_high", 1041),
+                // base window sits 10 samples (peak_low_def - base_low_def) ahead of the peak window
+                ("base_low", 1029),
+                ("base_high", 1029),
+            ]
+        );
     }
 
     #[test]
     fn compute_windows_fcup_peak_only() {
         // FCUP defaults: peak_low=1040, peak_high=1046
-        let d = WindowDefaults { peak_low: 1040, peak_high: 1046, base_low: 200, base_high: 800 };
+        let d = WindowDefaults {
+            peak_low: 1040,
+            peak_high: 1046,
+            base_low: 200,
+            base_high: 800,
+        };
         let windows = compute_windows(1000.0, &DeviceType::Fcup, &d);
         // peak_offset = (1046-1040)/2 = 3
         assert_eq!(windows, vec![("peak_low", 997), ("peak_high", 1003)]);

@@ -61,7 +61,11 @@ async fn main() -> anyhow::Result<()> {
     // PV writes shell out to the external `caput` binary (see epics::caput), so surface a
     // missing EPICS base at startup rather than at the first write. The Docker image builds
     // EPICS from source; a local checkout needs `caput` on PATH.
-    match tokio::process::Command::new("caput").arg("-h").output().await {
+    match tokio::process::Command::new("caput")
+        .arg("-h")
+        .output()
+        .await
+    {
         Ok(output) if output.status.success() => info!("caput found on PATH"),
         _ => warn!("caput not found on PATH — EPICS PV writes will fail (logged, non-fatal)"),
     }
@@ -73,7 +77,11 @@ async fn main() -> anyhow::Result<()> {
         .into_iter()
         .map(|(name, cfg)| {
             let max_index = cfg.sensitivities.len().saturating_sub(1);
-            let sensitivity = persisted.sensitivities.get(&name).copied().unwrap_or(max_index);
+            let sensitivity = persisted
+                .sensitivities
+                .get(&name)
+                .copied()
+                .unwrap_or(max_index);
             DeviceState {
                 config: cfg,
                 name,
@@ -121,7 +129,8 @@ async fn main() -> anyhow::Result<()> {
     // Watchdog: mark devices with no data for 60s as disconnected
     let state_for_watchdog = app_state.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(WATCHDOG_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(WATCHDOG_INTERVAL_SECS));
         loop {
             interval.tick().await;
             let now = std::time::SystemTime::now()
@@ -144,7 +153,8 @@ async fn main() -> anyhow::Result<()> {
     // Periodic front-end ping: TCP connect to each device IP:56000
     let state_for_ping = app_state.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(PING_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(PING_INTERVAL_SECS));
         loop {
             interval.tick().await;
             // Collect (index, ip) pairs while holding the lock briefly
@@ -192,13 +202,18 @@ async fn main() -> anyhow::Result<()> {
     let state_for_persist = app_state.clone();
     let state_path_clone = state_path.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(PERSIST_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(PERSIST_INTERVAL_SECS));
         loop {
             interval.tick().await;
             let s = state_for_persist.read().await;
             let p = PersistedState {
                 buffer_size: s.buffer_size,
-                sensitivities: s.devices.iter().map(|d| (d.name.clone(), d.current_sensitivity)).collect(),
+                sensitivities: s
+                    .devices
+                    .iter()
+                    .map(|d| (d.name.clone(), d.current_sensitivity))
+                    .collect(),
                 device_order: s.device_order.clone(),
             };
             drop(s);
@@ -206,9 +221,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let audit_path = PathBuf::from(
-        std::env::var("AUDIT_LOG").unwrap_or_else(|_| "audit.log".into()),
-    );
+    let audit_path =
+        PathBuf::from(std::env::var("AUDIT_LOG").unwrap_or_else(|_| "audit.log".into()));
     let audit = Arc::new(audit::AuditLog::open(&audit_path)?);
 
     let server_state = ServerState {
@@ -217,8 +231,7 @@ async fn main() -> anyhow::Result<()> {
         audit,
     };
 
-    let frontend_dir =
-        std::env::var("FRONTEND_DIR").unwrap_or_else(|_| "frontend_dist".into());
+    let frontend_dir = std::env::var("FRONTEND_DIR").unwrap_or_else(|_| "frontend_dist".into());
 
     let router = Router::new()
         .route("/ws", get(ws_handler))
@@ -237,10 +250,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<ServerState>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<ServerState>) -> impl IntoResponse {
     ws.max_message_size(MAX_WS_MESSAGE_SIZE)
         .on_upgrade(move |socket| ws::handle_ws(socket, state.app, state.broadcaster, state.audit))
 }

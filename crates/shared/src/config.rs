@@ -34,14 +34,13 @@ impl DefaultValue {
         match self {
             DefaultValue::Float(v) => *v,
             DefaultValue::Int(v) => *v as f64,
-            DefaultValue::FloatArray(arr) => {
-                arr.get(index).or_else(|| arr.last()).copied().unwrap_or(0.0)
-            }
+            DefaultValue::FloatArray(arr) => arr
+                .get(index)
+                .or_else(|| arr.last())
+                .copied()
+                .unwrap_or(0.0),
             DefaultValue::IntArray(arr) => {
-                arr.get(index)
-                    .or_else(|| arr.last())
-                    .copied()
-                    .unwrap_or(0) as f64
+                arr.get(index).or_else(|| arr.last()).copied().unwrap_or(0) as f64
             }
         }
     }

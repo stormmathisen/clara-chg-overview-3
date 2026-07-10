@@ -45,7 +45,12 @@ impl EpicsManager {
             tokio::spawn(persistent_monitor(device_index, pv_name, tx, app_state));
         }
 
-        Ok((Self { _update_tx: update_tx }, update_rx))
+        Ok((
+            Self {
+                _update_tx: update_tx,
+            },
+            update_rx,
+        ))
     }
 }
 
@@ -100,9 +105,10 @@ async fn run_monitor(
     let mut client = tokio::time::timeout(Duration::from_secs(5), Client::new())
         .await
         .map_err(|_| anyhow::anyhow!("timeout connecting to CA repeater"))??;
-    let (mut monitor, _token) = tokio::time::timeout(Duration::from_secs(5), client.subscribe(pv_name))
-        .await
-        .map_err(|_| anyhow::anyhow!("timeout subscribing to {pv_name}"))??;
+    let (mut monitor, _token) =
+        tokio::time::timeout(Duration::from_secs(5), client.subscribe(pv_name))
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout subscribing to {pv_name}"))??;
     info!("[{pv_name}] Subscribed successfully");
 
     loop {
@@ -113,7 +119,14 @@ async fn run_monitor(
                     .unwrap_or_default()
                     .as_secs_f64();
                 if let Some(value) = extract_f64(dbr.value()) {
-                    if tx.send(EpicsUpdate { device_index, timestamp, value }).is_err() {
+                    if tx
+                        .send(EpicsUpdate {
+                            device_index,
+                            timestamp,
+                            value,
+                        })
+                        .is_err()
+                    {
                         // Receiver dropped — app shutting down
                         return Ok(());
                     }

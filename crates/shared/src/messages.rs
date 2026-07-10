@@ -81,22 +81,13 @@ pub enum ServerMessage {
         device_order: Vec<String>,
     },
     /// Periodic chart data update (all devices)
-    ChartData {
-        snapshots: Vec<ChartSnapshot>,
-    },
+    ChartData { snapshots: Vec<ChartSnapshot> },
     /// A single state change broadcast to all clients
-    StateUpdate {
-        device: String,
-        sensitivity: usize,
-    },
+    StateUpdate { device: String, sensitivity: usize },
     /// Buffer size changed
-    BufferSizeChanged {
-        size: usize,
-    },
+    BufferSizeChanged { size: usize },
     /// Device order changed
-    DeviceOrderChanged {
-        order: Vec<String>,
-    },
+    DeviceOrderChanged { order: Vec<String> },
     /// Notification for the UI
     Notify(Notification),
 }
@@ -105,15 +96,30 @@ pub enum ServerMessage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
-    SetSensitivity { device: String, index: usize },
-    ZeroWCM { device: String },
-    SweepTiming { device: String },
-    RestoreDefaults { device: String },
+    SetSensitivity {
+        device: String,
+        index: usize,
+    },
+    ZeroWCM {
+        device: String,
+    },
+    SweepTiming {
+        device: String,
+    },
+    RestoreDefaults {
+        device: String,
+    },
     ClearCalibration,
-    SetBufferSize { size: usize },
-    SetDeviceOrder { order: Vec<String> },
+    SetBufferSize {
+        size: usize,
+    },
+    SetDeviceOrder {
+        order: Vec<String>,
+    },
     /// Clear the rolling data buffer for one device, or all devices if `None`.
-    ClearBuffer { device: Option<String> },
+    ClearBuffer {
+        device: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -139,7 +145,12 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
-        if let ServerMessage::Init { devices, buffer_size, device_order } = decoded {
+        if let ServerMessage::Init {
+            devices,
+            buffer_size,
+            device_order,
+        } = decoded
+        {
             assert_eq!(devices.len(), 1);
             assert_eq!(devices[0].name, "TEST-DEV");
             assert_eq!(devices[0].last_data_time, 1234567890.0);
