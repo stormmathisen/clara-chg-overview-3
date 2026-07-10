@@ -2,3 +2,9 @@
 members = ["crates/shared", "crates/server", "crates/frontend"]
 default-members = ["crates/shared", "crates/server"]
 resolver = "2"
+
+# Dependencies shared across more than one crate are centralised here so their
+# versions stay in lockstep. Individual crates opt in with `{ workspace = true }`.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

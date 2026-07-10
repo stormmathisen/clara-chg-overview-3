@@ -4,7 +4,13 @@ use shared::messages::{ChartSnapshot, Stats};
 use crate::app::YAxisScale;
 
 /// Draw a strip chart for a single device
-pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32, stats_override: Option<&Stats>, y_scale: &YAxisScale) {
+pub fn draw_strip_chart(
+    ui: &mut egui::Ui,
+    snapshot: &ChartSnapshot,
+    height: f32,
+    stats_override: Option<&Stats>,
+    y_scale: &YAxisScale,
+) {
     let stats = stats_override.unwrap_or(&snapshot.stats);
     let frozen = stats_override.is_some();
 
@@ -23,11 +29,7 @@ pub fn draw_strip_chart(ui: &mut egui::Ui, snapshot: &ChartSnapshot, height: f32
     });
 
     // Plot
-    let points: PlotPoints = snapshot
-        .points
-        .iter()
-        .map(|p| [p[0], p[1]])
-        .collect();
+    let points: PlotPoints = snapshot.points.iter().map(|p| [p[0], p[1]]).collect();
 
     let line = Line::new(points).color(egui::Color32::LIGHT_BLUE);
 

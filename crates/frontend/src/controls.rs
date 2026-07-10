@@ -68,11 +68,7 @@ pub fn draw_device_controls(
                         "Front-end hardware box: unreachable"
                     });
             }
-            ui.label(
-                egui::RichText::new(&device.name)
-                    .strong()
-                    .size(13.0),
-            );
+            ui.label(egui::RichText::new(&device.name).strong().size(13.0));
             ui.label(format!("({:?})", device.device_type));
             if device.last_data_time > 0.0 {
                 let secs = device.last_data_time as i64;
@@ -87,18 +83,29 @@ pub fn draw_device_controls(
                 );
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui: &mut egui::Ui| {
-                if index + 1 < total {
-                    if ui.small_button("Dn").on_hover_text("Move device down in display order").clicked() {
-                        device_order.swap(index, index + 1);
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui: &mut egui::Ui| {
+                    if index + 1 < total {
+                        if ui
+                            .small_button("Dn")
+                            .on_hover_text("Move device down in display order")
+                            .clicked()
+                        {
+                            device_order.swap(index, index + 1);
+                        }
                     }
-                }
-                if index > 0 {
-                    if ui.small_button("Up").on_hover_text("Move device up in display order").clicked() {
-                        device_order.swap(index, index - 1);
+                    if index > 0 {
+                        if ui
+                            .small_button("Up")
+                            .on_hover_text("Move device up in display order")
+                            .clicked()
+                        {
+                            device_order.swap(index, index - 1);
+                        }
                     }
-                }
-            });
+                },
+            );
         });
 
         // Sensitivity selector (only for devices with sensitivities)
@@ -121,8 +128,11 @@ pub fn draw_device_controls(
         ui.horizontal(|ui: &mut egui::Ui| {
             // Device-specific buttons (ICTs only get Restore Defaults)
             if device.device_type == DeviceType::Wcm {
-                if ui.button("Zero WCM")
-                    .on_hover_text("Zero the WCM offset (corrB). Beam must be OFF but RF must be ON.")
+                if ui
+                    .button("Zero WCM")
+                    .on_hover_text(
+                        "Zero the WCM offset (corrB). Beam must be OFF but RF must be ON.",
+                    )
                     .clicked()
                 {
                     out_msgs.push(ClientMessage::ZeroWCM {
@@ -132,8 +142,11 @@ pub fn draw_device_controls(
             }
 
             if device.device_type != DeviceType::Dq && device.device_type != DeviceType::Ict {
-                if ui.button("Sweep Timing")
-                    .on_hover_text("Sweep timing window to find optimal peak. Beam must be ON the device.")
+                if ui
+                    .button("Sweep Timing")
+                    .on_hover_text(
+                        "Sweep timing window to find optimal peak. Beam must be ON the device.",
+                    )
                     .clicked()
                 {
                     out_msgs.push(ClientMessage::SweepTiming {
@@ -146,7 +159,8 @@ pub fn draw_device_controls(
             let defaults_tip = if device.defaults.is_empty() {
                 "Restore all PV defaults for this device".to_string()
             } else {
-                let mut lines: Vec<String> = device.defaults
+                let mut lines: Vec<String> = device
+                    .defaults
                     .iter()
                     .filter(|(k, _)| k.as_str() != "charge")
                     .map(|(k, v)| format!("{k}: {v}"))
@@ -154,7 +168,8 @@ pub fn draw_device_controls(
                 lines.sort();
                 format!("Restore defaults:\n{}", lines.join("\n"))
             };
-            if ui.button("Restore Defaults")
+            if ui
+                .button("Restore Defaults")
                 .on_hover_text(defaults_tip)
                 .clicked()
             {
@@ -163,7 +178,8 @@ pub fn draw_device_controls(
                 });
             }
 
-            if ui.button("Clear")
+            if ui
+                .button("Clear")
                 .on_hover_text("Empty this device's rolling data buffer")
                 .clicked()
             {
@@ -191,7 +207,8 @@ pub fn draw_global_controls(
         if ui.button("Clear Calibration (All)").clicked() {
             out_msgs.push(ClientMessage::ClearCalibration);
         }
-        if ui.button("Clear Data (All)")
+        if ui
+            .button("Clear Data (All)")
             .on_hover_text("Empty the rolling data buffers for all devices")
             .clicked()
         {
@@ -213,7 +230,12 @@ pub fn draw_global_controls(
         }
         ui.separator();
         let is_frozen = frozen_stats.is_some();
-        if ui.button(if is_frozen { "Unfreeze Stats" } else { "Freeze Stats" })
+        if ui
+            .button(if is_frozen {
+                "Unfreeze Stats"
+            } else {
+                "Freeze Stats"
+            })
             .on_hover_text(if is_frozen {
                 "Resume live statistics updates"
             } else {
@@ -247,15 +269,27 @@ pub fn draw_global_controls(
         egui::ComboBox::from_id_salt("y_axis_scale")
             .selected_text(current_label)
             .show_ui(ui, |ui| {
-                if ui.selectable_label(matches!(y_scale, YAxisScale::Auto), "Auto").clicked() {
+                if ui
+                    .selectable_label(matches!(y_scale, YAxisScale::Auto), "Auto")
+                    .clicked()
+                {
                     *y_scale = YAxisScale::Auto;
                 }
-                if ui.selectable_label(matches!(y_scale, YAxisScale::ZeroBased), "Zero-based").clicked() {
+                if ui
+                    .selectable_label(matches!(y_scale, YAxisScale::ZeroBased), "Zero-based")
+                    .clicked()
+                {
                     *y_scale = YAxisScale::ZeroBased;
                 }
-                if ui.selectable_label(matches!(y_scale, YAxisScale::Manual { .. }), "Manual").clicked() {
+                if ui
+                    .selectable_label(matches!(y_scale, YAxisScale::Manual { .. }), "Manual")
+                    .clicked()
+                {
                     if !matches!(y_scale, YAxisScale::Manual { .. }) {
-                        *y_scale = YAxisScale::Manual { min: 0.0, max: 100.0 };
+                        *y_scale = YAxisScale::Manual {
+                            min: 0.0,
+                            max: 100.0,
+                        };
                         *y_min_str = "0".to_string();
                         *y_max_str = "100".to_string();
                     }
@@ -269,7 +303,9 @@ pub fn draw_global_controls(
             let max_resp = ui.add(egui::TextEdit::singleline(y_max_str).desired_width(50.0));
 
             if min_resp.lost_focus() || max_resp.lost_focus() {
-                if let (Ok(new_min), Ok(new_max)) = (y_min_str.parse::<f64>(), y_max_str.parse::<f64>()) {
+                if let (Ok(new_min), Ok(new_max)) =
+                    (y_min_str.parse::<f64>(), y_max_str.parse::<f64>())
+                {
                     if new_min < new_max {
                         *min = new_min;
                         *max = new_max;

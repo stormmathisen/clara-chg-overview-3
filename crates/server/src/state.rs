@@ -69,13 +69,22 @@ impl RollingBuffer {
             let v = p[1];
             sum += v;
             sum_sq += v * v;
-            if v < min { min = v; }
-            if v > max { max = v; }
+            if v < min {
+                min = v;
+            }
+            if v > max {
+                max = v;
+            }
         }
 
         let mean = sum / n;
         let rmsd = ((sum_sq / n) - (mean * mean)).max(0.0).sqrt();
-        Stats { mean, min, max, rmsd }
+        Stats {
+            mean,
+            min,
+            max,
+            rmsd,
+        }
     }
 
     pub fn as_points(&self) -> Vec<[f64; 2]> {

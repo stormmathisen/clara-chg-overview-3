@@ -114,7 +114,9 @@ impl ChargeOverviewApp {
                     self.snapshots = snapshots;
                     // Update stats in device status from snapshots
                     for snap in &self.snapshots {
-                        if let Some(dev) = self.devices.iter_mut().find(|d| d.name == snap.device_name) {
+                        if let Some(dev) =
+                            self.devices.iter_mut().find(|d| d.name == snap.device_name)
+                        {
                             dev.stats = snap.stats.clone();
                         }
                     }
@@ -168,9 +170,26 @@ impl eframe::App for ChargeOverviewApp {
                 } else {
                     egui::Color32::RED
                 };
-                ui.colored_label(status_color, if self.connected { "● Connected" } else { "● Disconnected" });
+                ui.colored_label(
+                    status_color,
+                    if self.connected {
+                        "● Connected"
+                    } else {
+                        "● Disconnected"
+                    },
+                );
             });
-            controls::draw_global_controls(ui, &mut self.buffer_size, &mut self.buffer_size_str, &mut out_msgs, &mut self.frozen_stats, &self.snapshots, &mut self.y_scale, &mut self.y_min_str, &mut self.y_max_str);
+            controls::draw_global_controls(
+                ui,
+                &mut self.buffer_size,
+                &mut self.buffer_size_str,
+                &mut out_msgs,
+                &mut self.frozen_stats,
+                &self.snapshots,
+                &mut self.y_scale,
+                &mut self.y_min_str,
+                &mut self.y_max_str,
+            );
         });
 
         // Bottom panel: notifications
@@ -201,41 +220,47 @@ impl eframe::App for ChargeOverviewApp {
                     let total = names.len();
                     let mut item_rects: Vec<egui::Rect> = Vec::new();
 
-                    let (_, dropped_payload) = ui.dnd_drop_zone::<String, ()>(egui::Frame::default(), |ui| {
-                        for (i, name) in names.iter().enumerate() {
-                            if let Some(device) = self.devices.iter().find(|d| &d.name == name) {
-                                let item_id = egui::Id::new("device_dnd").with(name.as_str());
-                                let scope_resp = ui.scope(|ui| {
-                                    ui.horizontal(|ui: &mut egui::Ui| {
-                                        ui.dnd_drag_source(item_id, name.clone(), |ui| {
-                                            ui.label(
-                                                egui::RichText::new("⠿")
-                                                    .size(16.0)
-                                                    .color(egui::Color32::GRAY),
-                                            )
-                                            .on_hover_text("Drag to reorder");
-                                        });
-                                        ui.vertical(|ui: &mut egui::Ui| {
-                                            controls::draw_device_controls(
-                                                ui,
-                                                device,
-                                                &mut out_msgs,
-                                                i,
-                                                total,
-                                                &mut self.device_order,
-                                            );
+                    let (_, dropped_payload) =
+                        ui.dnd_drop_zone::<String, ()>(egui::Frame::default(), |ui| {
+                            for (i, name) in names.iter().enumerate() {
+                                if let Some(device) = self.devices.iter().find(|d| &d.name == name)
+                                {
+                                    let item_id = egui::Id::new("device_dnd").with(name.as_str());
+                                    let scope_resp = ui.scope(|ui| {
+                                        ui.horizontal(|ui: &mut egui::Ui| {
+                                            ui.dnd_drag_source(item_id, name.clone(), |ui| {
+                                                ui.label(
+                                                    egui::RichText::new("⠿")
+                                                        .size(16.0)
+                                                        .color(egui::Color32::GRAY),
+                                                )
+                                                .on_hover_text("Drag to reorder");
+                                            });
+                                            ui.vertical(|ui: &mut egui::Ui| {
+                                                controls::draw_device_controls(
+                                                    ui,
+                                                    device,
+                                                    &mut out_msgs,
+                                                    i,
+                                                    total,
+                                                    &mut self.device_order,
+                                                );
+                                            });
                                         });
                                     });
-                                });
-                                item_rects.push(scope_resp.response.rect);
-                                ui.add_space(4.0);
+                                    item_rects.push(scope_resp.response.rect);
+                                    ui.add_space(4.0);
+                                }
                             }
-                        }
-                    });
+                        });
 
                     // Handle drag-and-drop reorder
                     if let Some(source_name) = dropped_payload {
-                        if let Some(source_idx) = self.device_order.iter().position(|n| n == source_name.as_str()) {
+                        if let Some(source_idx) = self
+                            .device_order
+                            .iter()
+                            .position(|n| n == source_name.as_str())
+                        {
                             if let Some(pointer_pos) = ui.ctx().pointer_interact_pos() {
                                 let mut target_idx = self.device_order.len();
                                 for (rect_i, rect) in item_rects.iter().enumerate() {
@@ -285,13 +310,23 @@ impl eframe::App for ChargeOverviewApp {
                     150.0
                 } else {
                     let avail = ui.available_height();
-                    (avail / visible_snapshots.len() as f32).max(100.0).min(200.0)
+                    (avail / visible_snapshots.len() as f32)
+                        .max(100.0)
+                        .min(200.0)
                 };
                 for snapshot in &visible_snapshots {
                     let stats_override = self.frozen_stats.as_ref().and_then(|fs| {
-                        fs.iter().find(|(n, _)| n == &snapshot.device_name).map(|(_, s)| s)
+                        fs.iter()
+                            .find(|(n, _)| n == &snapshot.device_name)
+                            .map(|(_, s)| s)
                     });
-                    strip_chart::draw_strip_chart(ui, snapshot, chart_height, stats_override, &self.y_scale);
+                    strip_chart::draw_strip_chart(
+                        ui,
+                        snapshot,
+                        chart_height,
+                        stats_override,
+                        &self.y_scale,
+                    );
                     ui.add_space(4.0);
                 }
             });

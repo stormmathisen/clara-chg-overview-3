@@ -45,7 +45,9 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
         .devices
         .iter()
         .map(|d| {
-            let defaults: std::collections::HashMap<String, f64> = d.config.defaults
+            let defaults: std::collections::HashMap<String, f64> = d
+                .config
+                .defaults
                 .iter()
                 .map(|(k, v)| (k.clone(), v.for_sensitivity(d.current_sensitivity)))
                 .collect();
@@ -72,7 +74,8 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
 /// Spawn the periodic chart data broadcast task (10 Hz)
 pub fn spawn_chart_broadcaster(state: AppState, broadcaster: Broadcaster) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(BROADCAST_INTERVAL_MS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(BROADCAST_INTERVAL_MS));
         loop {
             interval.tick().await;
             let state_read = state.read().await;

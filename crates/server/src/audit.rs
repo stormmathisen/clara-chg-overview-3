@@ -17,10 +17,7 @@ pub struct AuditLog {
 
 impl AuditLog {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         info!("Audit log opened: {}", path.display());
         Ok(Self {
             path: path.to_path_buf(),
@@ -30,8 +27,8 @@ impl AuditLog {
 
     pub fn log(&self, action: &str, detail: &str) {
         // Sanitize to prevent log injection
-        let sanitized_action = action.replace('\n', " ").replace('\r', " ");
-        let sanitized_detail = detail.replace('\n', " ").replace('\r', " ");
+        let sanitized_action = action.replace(['\n', '\r'], " ");
+        let sanitized_detail = detail.replace(['\n', '\r'], " ");
 
         let ts = Local::now().format("%Y-%m-%dT%H:%M:%S%.3f%z").to_string();
 
