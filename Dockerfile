@@ -1,5 +1,6 @@
 # Stage 1: Build server + frontend WASM
-FROM rust:bookworm AS builder
+# Pinned rather than floating on `rust:bookworm` so image builds are reproducible.
+FROM rust:1.94-bookworm AS builder
 
 # Install trunk and wasm target
 RUN rustup target add wasm32-unknown-unknown \
