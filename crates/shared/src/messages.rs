@@ -99,6 +99,8 @@ pub enum ServerMessage {
     BufferSizeChanged { size: usize },
     /// Device order changed
     DeviceOrderChanged { order: Vec<String> },
+    /// Countdown during a front-end reset. `remaining_secs == 0` means the wait is over.
+    ResetProgress { remaining_secs: u32, total_secs: u32 },
     /// Notification for the UI
     Notify(Notification),
 }
@@ -121,6 +123,9 @@ pub enum ClientMessage {
         device: String,
     },
     ClearCalibration,
+    /// Cut the front-end trigger long enough to reboot the PICs, then re-apply
+    /// every device's sensitivity (the boxes come back defaulted to FB4).
+    ResetFrontEnds,
     SetBufferSize {
         size: usize,
     },
@@ -226,6 +231,30 @@ mod tests {
         } else {
             panic!("Expected SetSensitivity");
         }
+    }
+
+    #[test]
+    fn reset_front_ends_roundtrip() {
+        let json = serde_json::to_string(&ClientMessage::ResetFrontEnds).unwrap();
+        assert_eq!(json, r#"{"type":"ResetFrontEnds"}"#);
+        assert!(matches!(
+            serde_json::from_str::<ClientMessage>(&json).unwrap(),
+            ClientMessage::ResetFrontEnds
+        ));
+
+        let msg = ServerMessage::ResetProgress {
+            remaining_secs: 42,
+            total_secs: 65,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let ServerMessage::ResetProgress {
+            remaining_secs,
+            total_secs,
+        } = serde_json::from_str(&json).unwrap()
+        else {
+            panic!("expected ResetProgress");
+        };
+        assert_eq!((remaining_secs, total_secs), (42, 65));
     }
 
     #[test]

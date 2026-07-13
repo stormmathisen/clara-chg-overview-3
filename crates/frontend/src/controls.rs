@@ -210,6 +210,7 @@ pub fn draw_global_controls(
     frozen_stats: &mut Option<Vec<(String, Stats)>>,
     charts: &[DeviceChart],
     y_axis: &mut YAxisState,
+    reset_progress: Option<(u32, u32)>,
 ) {
     let YAxisState {
         scale: y_scale,
@@ -219,6 +220,30 @@ pub fn draw_global_controls(
     ui.horizontal(|ui: &mut egui::Ui| {
         if ui.button("Clear Calibration (All)").clicked() {
             out_msgs.push(ClientMessage::ClearCalibration);
+        }
+        // While a reset runs the button becomes its own progress bar, so there is nothing
+        // left to click twice.
+        match reset_progress {
+            Some((remaining, total)) => {
+                let done = (total.saturating_sub(remaining)) as f32 / total.max(1) as f32;
+                ui.add(
+                    egui::ProgressBar::new(done)
+                        .desired_width(220.0)
+                        .text(format!("Resetting front ends... {remaining}s")),
+                );
+            }
+            None => {
+                if ui
+                    .button("Reset Front Ends")
+                    .on_hover_text(
+                        "Cut the front-end trigger for 65s to reboot the PICs, \
+                         then re-apply every device's sensitivity",
+                    )
+                    .clicked()
+                {
+                    out_msgs.push(ClientMessage::ResetFrontEnds);
+                }
+            }
         }
         if ui
             .button("Clear Data (All)")

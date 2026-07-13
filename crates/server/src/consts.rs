@@ -25,6 +25,10 @@ pub const WATCHDOG_STALE_SECS: f64 = 60.0;
 /// How often each device front-end is pinged for reachability.
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How long the front-end trigger stays off during a reset — long enough for the
+/// PICs on the front-end boxes to reboot.
+pub const RESET_WAIT: Duration = Duration::from_secs(65);
+
 // --- Chart broadcast ------------------------------------------------------------
 
 /// Capacity of the broadcast channel fanning chart/notification messages to clients.

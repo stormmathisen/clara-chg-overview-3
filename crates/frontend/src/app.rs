@@ -149,6 +149,8 @@ pub struct ChargeOverviewApp {
     notifications: VecDeque<NotificationEntry>,
     /// Whether the notification panel is expanded to show the history.
     history_open: bool,
+    /// `(remaining_secs, total_secs)` while a front-end reset is counting down.
+    reset_progress: Option<(u32, u32)>,
     buffer_size: usize,
     pub buffer_size_str: String,
     connected: bool,
@@ -172,6 +174,7 @@ impl ChargeOverviewApp {
             charts: Vec::new(),
             notifications: VecDeque::new(),
             history_open: false,
+            reset_progress: None,
             buffer_size: DEFAULT_BUFFER_SIZE,
             buffer_size_str: DEFAULT_BUFFER_SIZE.to_string(),
             connected: false,
@@ -203,6 +206,9 @@ impl ChargeOverviewApp {
                         .collect();
                     self.devices = devices;
                     self.buffer_size = buffer_size;
+                    // A reconnect mid-reset would otherwise leave the countdown stuck on
+                    // screen forever; if one really is running, the next tick re-arms it.
+                    self.reset_progress = None;
                 }
                 ServerMessage::ChartData { snapshots } => {
                     let cap = self.buffer_size;
@@ -237,6 +243,13 @@ impl ChargeOverviewApp {
                 }
                 ServerMessage::DeviceOrderChanged { order } => {
                     self.device_order = order;
+                }
+                ServerMessage::ResetProgress {
+                    remaining_secs,
+                    total_secs,
+                } => {
+                    self.reset_progress =
+                        (remaining_secs > 0).then_some((remaining_secs, total_secs));
                 }
                 ServerMessage::Notify(n) => {
                     self.notifications.push_back(NotificationEntry {
@@ -322,6 +335,7 @@ impl eframe::App for ChargeOverviewApp {
                 &mut self.frozen_stats,
                 &self.charts,
                 &mut self.y_axis,
+                self.reset_progress,
             );
         });
 
