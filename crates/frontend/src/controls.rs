@@ -1,6 +1,6 @@
 use shared::messages::{ClientMessage, DeviceStatus, DeviceType, Stats};
 
-use crate::app::{DeviceChart, DisplayFilter, YAxisScale, YAxisState};
+use crate::app::{BufferState, DeviceChart, DisplayFilter, YAxisScale, YAxisState};
 use crate::util::{glyph, hms, status_color};
 
 /// A coloured status dot with a context-dependent hover explanation.
@@ -204,8 +204,7 @@ fn restore_defaults_tooltip(device: &DeviceStatus) -> String {
 /// Draw global controls
 pub fn draw_global_controls(
     ui: &mut egui::Ui,
-    buffer_size: &mut usize,
-    buffer_size_str: &mut String,
+    buffer: &mut BufferState,
     out_msgs: &mut Vec<ClientMessage>,
     frozen_stats: &mut Option<Vec<(String, Stats)>>,
     charts: &[DeviceChart],
@@ -254,16 +253,16 @@ pub fn draw_global_controls(
         }
         ui.separator();
         ui.label("Buffer:");
-        let response = ui.add(egui::TextEdit::singleline(buffer_size_str).desired_width(60.0));
+        let response = ui.add(egui::TextEdit::singleline(&mut buffer.input).desired_width(60.0));
         if response.lost_focus() {
-            if let Ok(new_size) = buffer_size_str.parse::<usize>() {
-                if new_size != *buffer_size {
-                    *buffer_size = new_size;
+            if let Ok(new_size) = buffer.input.parse::<usize>() {
+                if new_size != buffer.size {
+                    buffer.size = new_size;
                     out_msgs.push(ClientMessage::SetBufferSize { size: new_size });
                 }
             } else {
                 // Reset to current value on invalid input
-                *buffer_size_str = buffer_size.to_string();
+                buffer.input = buffer.size.to_string();
             }
         }
         ui.separator();

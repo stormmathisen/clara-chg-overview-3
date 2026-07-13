@@ -100,7 +100,10 @@ pub enum ServerMessage {
     /// Device order changed
     DeviceOrderChanged { order: Vec<String> },
     /// Countdown during a front-end reset. `remaining_secs == 0` means the wait is over.
-    ResetProgress { remaining_secs: u32, total_secs: u32 },
+    ResetProgress {
+        remaining_secs: u32,
+        total_secs: u32,
+    },
     /// Notification for the UI
     Notify(Notification),
 }

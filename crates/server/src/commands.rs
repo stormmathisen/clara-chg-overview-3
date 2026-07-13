@@ -657,10 +657,7 @@ fn spawn_reset(state: AppState, broadcaster: Broadcaster) {
 ///
 /// The boxes ignore settings pushes while their trigger is off, so the resend must happen
 /// strictly after the trigger is back on.
-async fn reset_front_ends(
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) -> Result<(), CommandError> {
+async fn reset_front_ends(state: &AppState, broadcaster: &Broadcaster) -> Result<(), CommandError> {
     // Devices may share an EVR output (today they all do), so toggle each distinct PV once.
     let trigger_pvs: std::collections::BTreeSet<String> = {
         let state_read = state.read().await;
