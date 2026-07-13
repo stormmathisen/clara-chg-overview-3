@@ -20,6 +20,8 @@ pub mod keys {
     pub const PEAK_HIGH: &str = "peak_high";
     pub const BASE_LOW: &str = "base_low";
     pub const BASE_HIGH: &str = "base_high";
+    /// EVR output enable PV whose trigger feeds a device's front-end box.
+    pub const RESET_TRIGGER: &str = "reset_trigger";
 
     /// The four sweep-timing window keys, in the order they are written.
     pub const WINDOW_KEYS: [&str; 4] = [PEAK_LOW, PEAK_HIGH, BASE_LOW, BASE_HIGH];
@@ -76,6 +78,10 @@ pub async fn handle_command(
             handle_restore_defaults(&device, state, broadcaster).await
         }
         ClientMessage::ClearCalibration => handle_clear_calibration(state, broadcaster).await,
+        ClientMessage::ResetFrontEnds => {
+            spawn_reset(state.clone(), broadcaster.clone());
+            Ok(())
+        }
         ClientMessage::SetBufferSize { size } => {
             handle_set_buffer_size(size, state, broadcaster).await;
             Ok(())
@@ -555,11 +561,17 @@ async fn handle_restore_defaults(
     Ok(())
 }
 
-/// Best-effort across all non-DQ devices; see `handle_restore_defaults`.
-async fn handle_clear_calibration(
-    state: &AppState,
-    broadcaster: &Broadcaster,
-) -> Result<(), CommandError> {
+/// Push each device's currently selected sensitivity to its front-end box, best-effort:
+/// a box that fails gets an error notification and the rest still get pushed.
+///
+/// `:DQ` devices are skipped because they share their WCM's physical box (same IP), and
+/// ICTs because they have no box at all. `what` names the operation in error messages.
+///
+/// The settings are `settings_for_clear_calibration`, i.e. `FB{level}` with `io.input =
+/// "EXT"` — normal operation, calibration mode off. That is what both callers want: a
+/// clear-calibration is exactly "put every box back into normal operation at its selected
+/// sensitivity", and so is the resend after a front-end reset.
+async fn push_all_front_ends(state: &AppState, broadcaster: &Broadcaster, what: &str) {
     let devices_info: Vec<(String, String, u8)> = {
         let state_read = state.read().await;
         state_read
@@ -585,16 +597,147 @@ async fn handle_clear_calibration(
         if let Err(e) = hardware::send_settings(ip, &settings).await {
             notify_error(
                 broadcaster,
-                format!("Failed to clear calibration for {name}: {e}"),
+                format!("Failed to {what} for {name}: {e}"),
                 Some(name.clone()),
             );
         }
     }
+}
+
+/// Best-effort across all non-DQ devices; see `handle_restore_defaults`.
+async fn handle_clear_calibration(
+    state: &AppState,
+    broadcaster: &Broadcaster,
+) -> Result<(), CommandError> {
+    push_all_front_ends(state, broadcaster, "clear calibration").await;
 
     broadcast_notification(
         broadcaster,
         NotificationLevel::Success,
         "Cleared calibration mode for all devices".to_string(),
+        None,
+    );
+    Ok(())
+}
+
+/// Set while a front-end reset is running. A second reset started mid-wait would flip the
+/// trigger back on early and leave the PICs half-rebooted, so only one runs at a time.
+static RESET_IN_PROGRESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Run a front-end reset in the background.
+///
+/// Every other command is awaited inline in the per-client WebSocket receive loop; a reset
+/// takes over a minute, which would stall that operator's other commands for its duration.
+/// So this one is spawned. Progress and results reach every client over the broadcaster,
+/// exactly as they would from the inline path.
+fn spawn_reset(state: AppState, broadcaster: Broadcaster) {
+    use std::sync::atomic::Ordering;
+
+    if RESET_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        broadcast_notification(
+            &broadcaster,
+            NotificationLevel::Warning,
+            "A front-end reset is already running".to_string(),
+            None,
+        );
+        return;
+    }
+
+    tokio::spawn(async move {
+        if let Err(e) = reset_front_ends(&state, &broadcaster).await {
+            notify_error(&broadcaster, e.message, e.device);
+        }
+        RESET_IN_PROGRESS.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Cut the front-end trigger, wait for the PICs to reboot, restore it, then re-apply every
+/// device's sensitivity — the boxes come back up defaulted to FB4, so without the resend the
+/// readings would be silently wrong.
+///
+/// The boxes ignore settings pushes while their trigger is off, so the resend must happen
+/// strictly after the trigger is back on.
+async fn reset_front_ends(state: &AppState, broadcaster: &Broadcaster) -> Result<(), CommandError> {
+    // Devices may share an EVR output (today they all do), so toggle each distinct PV once.
+    let trigger_pvs: std::collections::BTreeSet<String> = {
+        let state_read = state.read().await;
+        state_read
+            .devices
+            .iter()
+            .filter_map(|d| d.config.pvs.get(keys::RESET_TRIGGER).cloned())
+            .collect()
+    };
+    if trigger_pvs.is_empty() {
+        return Err(CommandError {
+            message: format!("No '{}' PV configured for any device", keys::RESET_TRIGGER),
+            device: None,
+        });
+    }
+
+    let total_secs = crate::consts::RESET_WAIT.as_secs() as u32;
+    broadcast_notification(
+        broadcaster,
+        NotificationLevel::Info,
+        format!("Resetting front ends: trigger off for {total_secs}s..."),
+        None,
+    );
+
+    // Cut the trigger. If one PV won't take, restore the ones that did rather than leaving
+    // the machine with its triggers half off.
+    let mut zeroed: Vec<&String> = Vec::new();
+    for pv in &trigger_pvs {
+        if let Err(e) = epics::caput(pv, 0.0).await {
+            for done in zeroed {
+                let _ = epics::caput(done, 1.0).await;
+            }
+            return Err(CommandError {
+                message: format!("Failed to disable trigger {pv}: {e} — reset aborted"),
+                device: None,
+            });
+        }
+        zeroed.push(pv);
+    }
+
+    for remaining in (1..=total_secs).rev() {
+        send_message(
+            broadcaster,
+            &ServerMessage::ResetProgress {
+                remaining_secs: remaining,
+                total_secs,
+            },
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    // Restore the trigger. This one has to land: a PV stuck at 0 means no beam trigger, so
+    // retry once and shout if it still fails — but keep going, the other PVs and the
+    // sensitivity resend are still worth doing.
+    for pv in &trigger_pvs {
+        if let Err(e) = epics::caput(pv, 1.0).await {
+            if let Err(e2) = epics::caput(pv, 1.0).await {
+                notify_error(
+                    broadcaster,
+                    format!("FAILED TO RE-ENABLE TRIGGER {pv}: {e}; retry: {e2}"),
+                    None,
+                );
+            }
+        }
+    }
+
+    send_message(
+        broadcaster,
+        &ServerMessage::ResetProgress {
+            remaining_secs: 0,
+            total_secs,
+        },
+    );
+
+    push_all_front_ends(state, broadcaster, "re-apply sensitivity").await;
+
+    broadcast_notification(
+        broadcaster,
+        NotificationLevel::Success,
+        "Front ends reset and sensitivities re-applied".to_string(),
         None,
     );
     Ok(())

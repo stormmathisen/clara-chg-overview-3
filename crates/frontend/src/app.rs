@@ -39,6 +39,23 @@ impl Default for YAxisState {
     }
 }
 
+/// The applied buffer capacity plus the raw text of its edit box. Bundled for the same
+/// reason as `YAxisState`: the two always travel together, and a half-typed value in the
+/// box must not clobber the applied size until it parses.
+pub struct BufferState {
+    pub size: usize,
+    pub input: String,
+}
+
+impl Default for BufferState {
+    fn default() -> Self {
+        Self {
+            size: DEFAULT_BUFFER_SIZE,
+            input: DEFAULT_BUFFER_SIZE.to_string(),
+        }
+    }
+}
+
 /// A client-side chart for one device: the shared point buffer (kept in sync via
 /// snapshots/deltas) plus the display name and latest stats. Addressed by the device's
 /// index in the `Init.devices` list.
@@ -149,8 +166,9 @@ pub struct ChargeOverviewApp {
     notifications: VecDeque<NotificationEntry>,
     /// Whether the notification panel is expanded to show the history.
     history_open: bool,
-    buffer_size: usize,
-    pub buffer_size_str: String,
+    /// `(remaining_secs, total_secs)` while a front-end reset is counting down.
+    reset_progress: Option<(u32, u32)>,
+    pub buffer: BufferState,
     connected: bool,
     pub filter: DisplayFilter,
     pub device_order: Vec<String>,
@@ -172,8 +190,8 @@ impl ChargeOverviewApp {
             charts: Vec::new(),
             notifications: VecDeque::new(),
             history_open: false,
-            buffer_size: DEFAULT_BUFFER_SIZE,
-            buffer_size_str: DEFAULT_BUFFER_SIZE.to_string(),
+            reset_progress: None,
+            buffer: BufferState::default(),
             connected: false,
             filter: DisplayFilter::default(),
             device_order: Vec::new(),
@@ -202,10 +220,13 @@ impl ChargeOverviewApp {
                         .map(|d| DeviceChart::new(d.name.clone()))
                         .collect();
                     self.devices = devices;
-                    self.buffer_size = buffer_size;
+                    self.buffer.size = buffer_size;
+                    // A reconnect mid-reset would otherwise leave the countdown stuck on
+                    // screen forever; if one really is running, the next tick re-arms it.
+                    self.reset_progress = None;
                 }
                 ServerMessage::ChartData { snapshots } => {
-                    let cap = self.buffer_size;
+                    let cap = self.buffer.size;
                     for snap in snapshots {
                         if let Some(chart) = self.charts.get_mut(snap.device) {
                             chart.set_snapshot(snap.points, snap.stats, snap.cursor, cap);
@@ -213,7 +234,7 @@ impl ChargeOverviewApp {
                     }
                 }
                 ServerMessage::ChartDelta { updates } => {
-                    let cap = self.buffer_size;
+                    let cap = self.buffer.size;
                     for upd in updates {
                         if let Some(chart) = self.charts.get_mut(upd.device) {
                             chart.apply_delta(upd.new_points, upd.stats, upd.cursor, cap);
@@ -229,14 +250,21 @@ impl ChargeOverviewApp {
                     }
                 }
                 ServerMessage::BufferSizeChanged { size } => {
-                    self.buffer_size = size;
-                    self.buffer_size_str = size.to_string();
+                    self.buffer.size = size;
+                    self.buffer.input = size.to_string();
                     for chart in &mut self.charts {
                         chart.set_capacity(size);
                     }
                 }
                 ServerMessage::DeviceOrderChanged { order } => {
                     self.device_order = order;
+                }
+                ServerMessage::ResetProgress {
+                    remaining_secs,
+                    total_secs,
+                } => {
+                    self.reset_progress =
+                        (remaining_secs > 0).then_some((remaining_secs, total_secs));
                 }
                 ServerMessage::Notify(n) => {
                     self.notifications.push_back(NotificationEntry {
@@ -316,12 +344,12 @@ impl eframe::App for ChargeOverviewApp {
             });
             controls::draw_global_controls(
                 ui,
-                &mut self.buffer_size,
-                &mut self.buffer_size_str,
+                &mut self.buffer,
                 &mut out_msgs,
                 &mut self.frozen_stats,
                 &self.charts,
                 &mut self.y_axis,
+                self.reset_progress,
             );
         });
 
