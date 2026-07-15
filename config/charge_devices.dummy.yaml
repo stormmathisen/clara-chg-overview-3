@@ -1,0 +1,27 @@
+# Single-device test config for exercising the new HTTP front-end control path.
+# Load with:  CHARGE_CONFIG=config/charge_devices.dummy.yaml ./target/release/server
+#
+# `ip` is the real front-end box running the clara-chg-fe-2 HTTP API on port 56000.
+# Point it at 127.0.0.1 only if you're running the firmware locally instead.
+CLA-FED-DIA-FCUP-01:
+  type: 'fcup'
+  digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH6'
+  ip: '192.168.114.9'
+  sensitivities: [ 0, 1, 2, 3, 4 ]
+  pvs:
+    charge: 'CLA-FED-DIA-FCUP-01:Q'
+    reset_trigger: 'CLA-C28-TIM-EVR-01:FrontUnivOut0-Ena-SP'
+    base_low: 'CLA-FED-DIA-FCUP-01:base:Low'
+    base_high: 'CLA-FED-DIA-FCUP-01:base:High'
+    peak_low: 'CLA-FED-DIA-FCUP-01:peak:Low'
+    peak_high: 'CLA-FED-DIA-FCUP-01:peak:High'
+    corrA: 'CLA-FED-DIA-FCUP-01:corA'
+    corrB: 'CLA-FED-DIA-FCUP-01:corB'
+  defaults:
+    charge: 0.0
+    base_low: 200
+    base_high: 800
+    peak_low: 1040
+    peak_high: 1046
+    corrA: [ -0.000166533, -0.000260706, -0.000529369, -0.002607354, -0.00838506 ]
+    corrB: [ 0.0, 0.0, 0.0, 0.0, 0.0 ]

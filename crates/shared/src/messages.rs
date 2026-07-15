@@ -51,7 +51,7 @@ pub struct DeviceStatus {
     pub defaults: HashMap<String, f64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
 pub enum DeviceType {
     Wcm,

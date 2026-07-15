@@ -105,7 +105,9 @@ const NOTIFICATION_DISMISS_SECS: f64 = 10.0;
 const HISTORY_MAX_HEIGHT: f32 = 180.0;
 /// Buffer size assumed until the server's Init message arrives.
 const DEFAULT_BUFFER_SIZE: usize = 1000;
-const CONTROLS_PANEL_WIDTH: f32 = 280.0;
+const CONTROLS_PANEL_WIDTH: f32 = 340.0;
+/// Global UI scale — nudges all text (and everything else) up a touch for readability.
+const ZOOM_FACTOR: f32 = 1.15;
 const CHART_HEIGHT_EMPTY: f32 = 150.0;
 const CHART_HEIGHT_MIN: f32 = 100.0;
 const CHART_HEIGHT_MAX: f32 = 200.0;
@@ -177,12 +179,27 @@ pub struct ChargeOverviewApp {
 }
 
 impl ChargeOverviewApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        cc.egui_ctx.set_zoom_factor(ZOOM_FACTOR);
+
+        // Lift the dim grey body text to white; the `.strong()` headers use
+        // `widgets.active` (unaffected by override_text_color) so they stay the anchors.
+        let mut visuals = egui::Visuals::dark();
+        visuals.override_text_color = Some(egui::Color32::WHITE);
+        cc.egui_ctx.set_visuals(visuals);
+
         // Derive WebSocket URL from current page location
         let ws_url = get_ws_url();
 
         let mut ws = WsClient::new();
         ws.connect(&ws_url);
+
+        // Device order is persisted per-browser (localStorage), not server-side. Seed from
+        // storage; reconcile_order fills in the sorted default for anything not listed on Init.
+        let device_order = cc
+            .storage
+            .and_then(|s| eframe::get_value::<Vec<String>>(s, DEVICE_ORDER_KEY))
+            .unwrap_or_default();
 
         Self {
             ws,
@@ -194,7 +211,7 @@ impl ChargeOverviewApp {
             buffer: BufferState::default(),
             connected: false,
             filter: DisplayFilter::default(),
-            device_order: Vec::new(),
+            device_order,
             frozen_stats: None,
             y_axis: YAxisState::default(),
         }
@@ -210,9 +227,11 @@ impl ChargeOverviewApp {
                 ServerMessage::Init {
                     devices,
                     buffer_size,
-                    device_order,
+                    device_order: _, // ignored: order is per-browser, kept in local storage
                 } => {
-                    self.device_order = device_order;
+                    // Keep our own order (persisted / from this session) for devices that still
+                    // exist; slot any others in sorted by type then name.
+                    self.device_order = reconcile_order(&self.device_order, &devices);
                     // Rebuild chart buffers parallel to the device list; the full
                     // ChartData snapshot that follows Init fills them in.
                     self.charts = devices
@@ -256,8 +275,8 @@ impl ChargeOverviewApp {
                         chart.set_capacity(size);
                     }
                 }
-                ServerMessage::DeviceOrderChanged { order } => {
-                    self.device_order = order;
+                ServerMessage::DeviceOrderChanged { .. } => {
+                    // Order is persisted per-browser now; ignore other clients' reorders.
                 }
                 ServerMessage::ResetProgress {
                     remaining_secs,
@@ -317,7 +336,34 @@ impl ChargeOverviewApp {
     }
 }
 
+/// Storage key for the per-browser device display order.
+const DEVICE_ORDER_KEY: &str = "device_order";
+
+/// Merge the current/persisted order with the live device list: keep listed devices that
+/// still exist (in their saved order), then append everything else sorted by type then name.
+/// This is what gives a fresh browser the type+name default while preserving manual reorders.
+fn reconcile_order(base: &[String], devices: &[DeviceStatus]) -> Vec<String> {
+    let known: HashSet<&str> = devices.iter().map(|d| d.name.as_str()).collect();
+    let mut order: Vec<String> = base
+        .iter()
+        .filter(|n| known.contains(n.as_str()))
+        .cloned()
+        .collect();
+    let listed: HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
+    let mut rest: Vec<&DeviceStatus> = devices
+        .iter()
+        .filter(|d| !listed.contains(d.name.as_str()))
+        .collect();
+    rest.sort_by(|a, b| a.device_type.cmp(&b.device_type).then(a.name.cmp(&b.name)));
+    order.extend(rest.iter().map(|d| d.name.clone()));
+    order
+}
+
 impl eframe::App for ChargeOverviewApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, DEVICE_ORDER_KEY, &self.device_order);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Seconds since the app started. Repaints are driven by both the 10 Hz timer
         // and user input, so wall-clock elapsed — not a frame count — is what makes
@@ -389,10 +435,8 @@ impl eframe::App for ChargeOverviewApp {
                 egui::ScrollArea::vertical().show(ui, |ui: &mut egui::Ui| {
                     controls::draw_filter_controls(ui, &self.devices, &mut self.filter);
                     ui.separator();
-                    // `reordered` is set by the Up/Dn buttons (returned from
-                    // draw_device_controls) and by the drag-and-drop handler below, so we
-                    // don't need to clone the order just to diff it afterwards.
-                    let mut reordered = false;
+                    // Reorders (Up/Dn buttons and drag-and-drop below) mutate `device_order`
+                    // in place; it's persisted per-browser by `save()`, no server round-trip.
                     // A snapshot of the names to iterate while `device_order` is mutably borrowed.
                     let names = self.device_order.clone();
                     let total = names.len();
@@ -414,7 +458,7 @@ impl eframe::App for ChargeOverviewApp {
                                                 .on_hover_text("Drag to reorder");
                                             });
                                             ui.vertical(|ui: &mut egui::Ui| {
-                                                reordered |= controls::draw_device_controls(
+                                                controls::draw_device_controls(
                                                     ui,
                                                     device,
                                                     &mut out_msgs,
@@ -454,16 +498,9 @@ impl eframe::App for ChargeOverviewApp {
                                         target_idx.min(self.device_order.len())
                                     };
                                     self.device_order.insert(adjusted, item);
-                                    reordered = true;
                                 }
                             }
                         }
-                    }
-
-                    if reordered {
-                        out_msgs.push(ClientMessage::SetDeviceOrder {
-                            order: self.device_order.clone(),
-                        });
                     }
                 });
             });

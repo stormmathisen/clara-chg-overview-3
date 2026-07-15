@@ -161,13 +161,22 @@ async fn handle_set_sensitivity(
         (ip, level, corr_a_pv, corr_a_value, dq_info)
     };
 
-    // Send TCP settings to hardware
-    let settings = hardware::settings_for_sensitivity(sensitivity_level);
-    if let Err(e) = hardware::send_settings(&ip, &settings).await {
+    // Push the integrator to the front-end box over its HTTP API.
+    if let Err(e) = hardware::set_sensitivity(&ip, sensitivity_level).await {
         return Err(CommandError::for_device(
             format!("Failed to set sensitivity for {device_name}: {e}"),
             device_name,
         ));
+    }
+
+    // Record the new sensitivity before the best-effort caputs below, so that when the
+    // front-end echoes this change back over its `/events` SSE stream the index already
+    // matches and `fe_events` treats it as our own write, not an external change.
+    {
+        let mut state_write = state.write().await;
+        if let Some(device) = state_write.device_mut(device_name) {
+            device.current_sensitivity = index;
+        }
     }
 
     // Set corrA via EPICS
@@ -181,14 +190,6 @@ async fn handle_set_sensitivity(
     if let Some((Some(pv), Some(val))) = dq_info {
         if let Err(e) = epics::caput(&pv, val).await {
             error!("Failed to caput DQcal: {e}");
-        }
-    }
-
-    // Update state and broadcast
-    {
-        let mut state_write = state.write().await;
-        if let Some(device) = state_write.device_mut(device_name) {
-            device.current_sensitivity = index;
         }
     }
 
@@ -567,8 +568,8 @@ async fn handle_restore_defaults(
 /// `:DQ` devices are skipped because they share their WCM's physical box (same IP), and
 /// ICTs because they have no box at all. `what` names the operation in error messages.
 ///
-/// The settings are `settings_for_clear_calibration`, i.e. `FB{level}` with `io.input =
-/// "EXT"` — normal operation, calibration mode off. That is what both callers want: a
+/// Each box is set to `FB{level}` with `io.input = "EXT"` — normal operation, calibration
+/// mode off (`hardware::clear_calibration`). That is what both callers want: a
 /// clear-calibration is exactly "put every box back into normal operation at its selected
 /// sensitivity", and so is the resend after a front-end reset.
 async fn push_all_front_ends(state: &AppState, broadcaster: &Broadcaster, what: &str) {
@@ -593,8 +594,7 @@ async fn push_all_front_ends(state: &AppState, broadcaster: &Broadcaster, what: 
     };
 
     for (name, ip, level) in &devices_info {
-        let settings = hardware::settings_for_clear_calibration(*level);
-        if let Err(e) = hardware::send_settings(ip, &settings).await {
+        if let Err(e) = hardware::clear_calibration(ip, *level).await {
             notify_error(
                 broadcaster,
                 format!("Failed to {what} for {name}: {e}"),

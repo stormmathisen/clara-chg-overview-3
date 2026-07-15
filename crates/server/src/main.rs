@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod consts;
 mod epics;
+mod fe_events;
 mod hardware;
 mod state;
 mod ws;
@@ -106,6 +107,26 @@ async fn main() -> anyhow::Result<()> {
 
     let broadcaster = ws::new_broadcaster();
     ws::spawn_chart_broadcaster(app_state.clone(), broadcaster.clone());
+
+    // Listen for sensitivity changes made outside this program (device web UI, etc.)
+    fe_events::spawn_fe_event_listeners(app_state.clone(), broadcaster.clone());
+
+    // On open, push each configured device name to its front-end box if the box has none set.
+    let targets: Vec<(String, String)> = {
+        let s = app_state.read().await;
+        s.devices
+            .iter()
+            .filter(|d| !d.config.ip.is_empty())
+            .map(|d| (d.config.ip.clone(), d.name.clone()))
+            .collect()
+    };
+    for (ip, name) in targets {
+        tokio::spawn(async move {
+            if let Err(e) = hardware::ensure_device_name(&ip, &name).await {
+                warn!("[{ip}] could not set device name: {e}");
+            }
+        });
+    }
 
     // Watchdog: mark devices with no data for 60s as disconnected
     let state_for_watchdog = app_state.clone();
