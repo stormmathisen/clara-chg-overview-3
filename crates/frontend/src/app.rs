@@ -276,9 +276,11 @@ impl ChargeOverviewApp {
                 ServerMessage::StateUpdate {
                     device,
                     sensitivity,
+                    calibration_mismatch,
                 } => {
                     if let Some(dev) = self.devices.iter_mut().find(|d| d.name == device) {
                         dev.current_sensitivity = sensitivity;
+                        dev.calibration_mismatch = calibration_mismatch;
                     }
                 }
                 ServerMessage::BufferSizeChanged { size } => {

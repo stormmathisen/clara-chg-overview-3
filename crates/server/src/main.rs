@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
                 connected: false,
                 fe_alive: false,
                 last_data_time: 0.0,
+                calibration_mismatch: false,
             }
         })
         .collect();
@@ -305,6 +306,7 @@ mod tests {
             connected: false,
             fe_alive: false,
             last_data_time: 0.0,
+            calibration_mismatch: false,
         }
     }
 

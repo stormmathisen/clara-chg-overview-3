@@ -118,14 +118,33 @@ pub fn draw_device_controls(
             );
         });
 
-        // Sensitivity selector (only for devices with sensitivities)
+        // Sensitivity selector (only for devices with sensitivities). When the sensitivity
+        // was changed outside this program the calibration factors may be stale, so we
+        // highlight the row orange; re-clicking the selected level re-applies it (and its
+        // config calibration factors), clearing the warning.
         if !device.sensitivities.is_empty() {
+            let mismatch = device.calibration_mismatch;
             ui.horizontal(|ui: &mut egui::Ui| {
-                ui.label("Sensitivity:");
+                let label = egui::RichText::new("Sensitivity:");
+                let resp = ui.label(if mismatch {
+                    label.color(egui::Color32::ORANGE)
+                } else {
+                    label
+                });
+                if mismatch {
+                    resp.on_hover_text(
+                        "Sensitivity was changed outside this program — calibration factors \
+                         may no longer match the config. Click the selected level to re-apply.",
+                    );
+                }
                 for (i, sens) in device.sensitivities.iter().enumerate() {
                     let selected = i == device.current_sensitivity;
-                    let label = format!("FB{sens}");
-                    if ui.selectable_label(selected, &label).clicked() && !selected {
+                    let mut text = egui::RichText::new(format!("FB{sens}"));
+                    if mismatch && selected {
+                        text = text.color(egui::Color32::ORANGE);
+                    }
+                    // No `!selected` guard: clicking the current level re-applies it.
+                    if ui.selectable_label(selected, text).clicked() {
                         out_msgs.push(ClientMessage::SetSensitivity {
                             device: device.name.clone(),
                             index: i,

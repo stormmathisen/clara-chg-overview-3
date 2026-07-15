@@ -124,6 +124,9 @@ async fn handle_settings(
         let changed = device.current_sensitivity != index;
         if changed {
             device.current_sensitivity = index;
+            // We didn't write this sensitivity, so its calibration factors were not
+            // (re)applied — flag the mismatch until an operator re-applies.
+            device.calibration_mismatch = true;
         }
         (device.name.clone(), changed.then_some(index))
     };
@@ -135,6 +138,7 @@ async fn handle_settings(
             &ServerMessage::StateUpdate {
                 device: name.clone(),
                 sensitivity: index,
+                calibration_mismatch: true,
             },
         );
         broadcast_notification(

@@ -49,6 +49,11 @@ pub struct DeviceStatus {
     pub last_data_time: f64,
     #[serde(default)]
     pub defaults: HashMap<String, f64>,
+    /// True when the sensitivity was changed outside this program since our last apply,
+    /// so the device's calibration factors may no longer match the config. Cleared by
+    /// re-applying the sensitivity.
+    #[serde(default)]
+    pub calibration_mismatch: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -98,8 +103,14 @@ pub enum ServerMessage {
     ChartData { snapshots: Vec<ChartSnapshot> },
     /// Incremental chart update: append new points. The steady-state 10 Hz message.
     ChartDelta { updates: Vec<DeviceDelta> },
-    /// A single state change broadcast to all clients
-    StateUpdate { device: String, sensitivity: usize },
+    /// A single state change broadcast to all clients. `calibration_mismatch` is true when
+    /// this change came from outside the program (calibration factors may be stale).
+    StateUpdate {
+        device: String,
+        sensitivity: usize,
+        #[serde(default)]
+        calibration_mismatch: bool,
+    },
     /// Buffer size changed
     BufferSizeChanged { size: usize },
     /// Device order changed
@@ -203,6 +214,7 @@ mod tests {
                 fe_alive: true,
                 last_data_time: 1234567890.0,
                 defaults: HashMap::new(),
+                calibration_mismatch: true,
             }],
             buffer_size: 1000,
             device_order: vec!["TEST-DEV".to_string()],
@@ -220,6 +232,7 @@ mod tests {
             assert_eq!(devices.len(), 1);
             assert_eq!(devices[0].name, "TEST-DEV");
             assert_eq!(devices[0].last_data_time, 1234567890.0);
+            assert!(devices[0].calibration_mismatch);
             assert_eq!(buffer_size, 1000);
             assert_eq!(device_order, vec!["TEST-DEV"]);
             assert_eq!(reset_progress, Some((42, 65)));

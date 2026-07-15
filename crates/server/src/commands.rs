@@ -171,11 +171,14 @@ async fn handle_set_sensitivity(
 
     // Record the new sensitivity before the best-effort caputs below, so that when the
     // front-end echoes this change back over its `/events` SSE stream the index already
-    // matches and `fe_events` treats it as our own write, not an external change.
+    // matches and `fe_events` treats it as our own write, not an external change. Clearing
+    // `calibration_mismatch` here is correct because the caputs below (re)write the config's
+    // calibration factors for this sensitivity.
     {
         let mut state_write = state.write().await;
         if let Some(device) = state_write.device_mut(device_name) {
             device.current_sensitivity = index;
+            device.calibration_mismatch = false;
         }
     }
 
@@ -198,6 +201,7 @@ async fn handle_set_sensitivity(
         &ServerMessage::StateUpdate {
             device: device_name.to_string(),
             sensitivity: index,
+            calibration_mismatch: false,
         },
     );
 

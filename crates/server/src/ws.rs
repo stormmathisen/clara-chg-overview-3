@@ -84,6 +84,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
                 fe_alive: d.fe_alive,
                 last_data_time: d.last_data_time,
                 defaults,
+                calibration_mismatch: d.calibration_mismatch,
             }
         })
         .collect();

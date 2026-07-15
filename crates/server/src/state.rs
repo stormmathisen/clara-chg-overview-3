@@ -168,6 +168,9 @@ pub struct DeviceState {
     pub connected: bool,
     pub fe_alive: bool,
     pub last_data_time: f64,
+    /// Set when a `/events` SSE change tells us the sensitivity moved outside this program
+    /// (so calibration factors may not match config); cleared when we re-apply sensitivity.
+    pub calibration_mismatch: bool,
 }
 
 /// Global application state, shared across all tasks
