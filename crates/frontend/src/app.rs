@@ -125,7 +125,8 @@ struct NotificationEntry {
     received_at: f64,
 }
 
-/// Filter state for display
+/// Filter state for display. Persisted per-browser in local storage (like device order).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct DisplayFilter {
     pub show_wcm: bool,
     pub show_dq: bool,
@@ -200,6 +201,10 @@ impl ChargeOverviewApp {
             .storage
             .and_then(|s| eframe::get_value::<Vec<String>>(s, DEVICE_ORDER_KEY))
             .unwrap_or_default();
+        let filter = cc
+            .storage
+            .and_then(|s| eframe::get_value::<DisplayFilter>(s, FILTER_KEY))
+            .unwrap_or_default();
 
         Self {
             ws,
@@ -210,7 +215,7 @@ impl ChargeOverviewApp {
             reset_progress: None,
             buffer: BufferState::default(),
             connected: false,
-            filter: DisplayFilter::default(),
+            filter,
             device_order,
             frozen_stats: None,
             y_axis: YAxisState::default(),
@@ -240,6 +245,7 @@ impl ChargeOverviewApp {
                         .collect();
                     self.devices = devices;
                     self.buffer.size = buffer_size;
+                    self.buffer.input = buffer_size.to_string();
                     // A reconnect mid-reset would otherwise leave the countdown stuck on
                     // screen forever; if one really is running, the next tick re-arms it.
                     self.reset_progress = None;
@@ -338,6 +344,7 @@ impl ChargeOverviewApp {
 
 /// Storage key for the per-browser device display order.
 const DEVICE_ORDER_KEY: &str = "device_order";
+const FILTER_KEY: &str = "display_filter";
 
 /// Merge the current/persisted order with the live device list: keep listed devices that
 /// still exist (in their saved order), then append everything else sorted by type then name.
@@ -362,6 +369,7 @@ fn reconcile_order(base: &[String], devices: &[DeviceStatus]) -> Vec<String> {
 impl eframe::App for ChargeOverviewApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, DEVICE_ORDER_KEY, &self.device_order);
+        eframe::set_value(storage, FILTER_KEY, &self.filter);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

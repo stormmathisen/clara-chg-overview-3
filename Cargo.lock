@@ -875,6 +875,7 @@ dependencies = [
  "egui_plot",
  "ewebsock",
  "log",
+ "serde",
  "serde_json",
  "shared",
  "wasm-bindgen",
