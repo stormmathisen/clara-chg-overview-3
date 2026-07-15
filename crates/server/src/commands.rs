@@ -699,6 +699,9 @@ async fn reset_front_ends(state: &AppState, broadcaster: &Broadcaster) -> Result
     }
 
     for remaining in (1..=total_secs).rev() {
+        // Store in shared state too, so a client connecting mid-reset gets the same
+        // countdown in its Init instead of the plain button.
+        state.write().await.reset_progress = Some((remaining, total_secs));
         send_message(
             broadcaster,
             &ServerMessage::ResetProgress {
@@ -724,6 +727,7 @@ async fn reset_front_ends(state: &AppState, broadcaster: &Broadcaster) -> Result
         }
     }
 
+    state.write().await.reset_progress = None;
     send_message(
         broadcaster,
         &ServerMessage::ResetProgress {

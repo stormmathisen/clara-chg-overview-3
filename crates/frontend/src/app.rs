@@ -11,7 +11,7 @@ use crate::util::{glyph, hms, notification_color, status_color};
 use crate::ws_client::WsClient;
 
 /// Y-axis scaling mode for all strip charts
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum YAxisScale {
     /// Auto-scale to fit data (default)
     Auto,
@@ -23,6 +23,8 @@ pub enum YAxisScale {
 
 /// The Y-axis scale plus the raw text of its manual min/max boxes. Bundled so the
 /// three travel together instead of being threaded through as separate arguments.
+/// Persisted per-browser in local storage (like device order and display filters).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct YAxisState {
     pub scale: YAxisScale,
     pub min_str: String,
@@ -205,6 +207,10 @@ impl ChargeOverviewApp {
             .storage
             .and_then(|s| eframe::get_value::<DisplayFilter>(s, FILTER_KEY))
             .unwrap_or_default();
+        let y_axis = cc
+            .storage
+            .and_then(|s| eframe::get_value::<YAxisState>(s, Y_AXIS_KEY))
+            .unwrap_or_default();
 
         Self {
             ws,
@@ -218,7 +224,7 @@ impl ChargeOverviewApp {
             filter,
             device_order,
             frozen_stats: None,
-            y_axis: YAxisState::default(),
+            y_axis,
         }
     }
 
@@ -233,6 +239,7 @@ impl ChargeOverviewApp {
                     devices,
                     buffer_size,
                     device_order: _, // ignored: order is per-browser, kept in local storage
+                    reset_progress,
                 } => {
                     // Keep our own order (persisted / from this session) for devices that still
                     // exist; slot any others in sorted by type then name.
@@ -246,9 +253,9 @@ impl ChargeOverviewApp {
                     self.devices = devices;
                     self.buffer.size = buffer_size;
                     self.buffer.input = buffer_size.to_string();
-                    // A reconnect mid-reset would otherwise leave the countdown stuck on
-                    // screen forever; if one really is running, the next tick re-arms it.
-                    self.reset_progress = None;
+                    // Adopt the server's live countdown so a window connecting mid-reset
+                    // matches the others immediately (None when no reset is running).
+                    self.reset_progress = reset_progress;
                 }
                 ServerMessage::ChartData { snapshots } => {
                     let cap = self.buffer.size;
@@ -345,6 +352,7 @@ impl ChargeOverviewApp {
 /// Storage key for the per-browser device display order.
 const DEVICE_ORDER_KEY: &str = "device_order";
 const FILTER_KEY: &str = "display_filter";
+const Y_AXIS_KEY: &str = "y_axis";
 
 /// Merge the current/persisted order with the live device list: keep listed devices that
 /// still exist (in their saved order), then append everything else sorted by type then name.
@@ -370,6 +378,7 @@ impl eframe::App for ChargeOverviewApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, DEVICE_ORDER_KEY, &self.device_order);
         eframe::set_value(storage, FILTER_KEY, &self.filter);
+        eframe::set_value(storage, Y_AXIS_KEY, &self.y_axis);
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

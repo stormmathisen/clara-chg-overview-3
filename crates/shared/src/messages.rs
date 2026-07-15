@@ -87,6 +87,11 @@ pub enum ServerMessage {
         devices: Vec<DeviceStatus>,
         buffer_size: usize,
         device_order: Vec<String>,
+        /// Current front-end reset countdown `(remaining_secs, total_secs)`, so a window
+        /// connecting mid-reset shows the same progress as the others instead of the
+        /// button. `None` when no reset is running.
+        #[serde(default)]
+        reset_progress: Option<(u32, u32)>,
     },
     /// Full chart snapshot: replace the client's buffers wholesale. Sent per-client
     /// on connect and broadcast after a buffer clear/resize.
@@ -201,6 +206,7 @@ mod tests {
             }],
             buffer_size: 1000,
             device_order: vec!["TEST-DEV".to_string()],
+            reset_progress: Some((42, 65)),
         };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
@@ -208,6 +214,7 @@ mod tests {
             devices,
             buffer_size,
             device_order,
+            reset_progress,
         } = decoded
         {
             assert_eq!(devices.len(), 1);
@@ -215,6 +222,7 @@ mod tests {
             assert_eq!(devices[0].last_data_time, 1234567890.0);
             assert_eq!(buffer_size, 1000);
             assert_eq!(device_order, vec!["TEST-DEV"]);
+            assert_eq!(reset_progress, Some((42, 65)));
         } else {
             panic!("Expected Init message");
         }
