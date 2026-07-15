@@ -14,9 +14,43 @@
 //! Each endpoint returns the full updated `Settings` on 200 and a plain-text message on a
 //! 4xx validation error; we only care about success vs. failure, so the body is surfaced
 //! only in the error path.
+//!
+//! **Legacy boxes:** older front-ends (pre-`clara-chg-fe-2`) don't speak HTTP at all — they
+//! take a raw-TCP JSON `Settings` blob on the same port 56000. We [`detect_api`] once per
+//! control action and fall back to the [`legacy`] TCP path for those. This is transitional;
+//! drop the fallback once every box is reflashed.
 
 use serde::Serialize;
 use tracing::info;
+
+/// Which control protocol a front-end box speaks. Both live on port 56000, so we probe.
+enum FrontEndApi {
+    /// New `clara-chg-fe-2` firmware: HTTP REST API.
+    Http,
+    /// Older firmware: raw-TCP JSON `Settings` blob (see [`legacy`]).
+    Legacy,
+}
+
+/// Probe a box to decide which protocol it speaks. The new firmware answers
+/// `GET /settings` with 200 JSON; the legacy raw-TCP server never produces a valid HTTP
+/// response, so any error or non-2xx means legacy. Bounded by the short connect timeout so
+/// an old box (which never replies to our HTTP request) costs at most that.
+async fn detect_api(ip: &str) -> FrontEndApi {
+    detect_api_at(&base_url(ip)).await
+}
+
+async fn detect_api_at(base_url: &str) -> FrontEndApi {
+    let probe = reqwest::Client::builder()
+        .timeout(crate::consts::FRONT_END_CONNECT_TIMEOUT)
+        .build();
+    match probe {
+        Ok(c) => match c.get(format!("{base_url}/settings")).send().await {
+            Ok(r) if r.status().is_success() => FrontEndApi::Http,
+            _ => FrontEndApi::Legacy,
+        },
+        Err(_) => FrontEndApi::Legacy,
+    }
+}
 
 fn base_url(ip: &str) -> String {
     format!("http://{ip}:{}", crate::consts::FRONT_END_PORT)
@@ -52,14 +86,22 @@ pub async fn set_sensitivity(ip: &str, level: u8) -> anyhow::Result<()> {
     if ip.is_empty() {
         anyhow::bail!("No IP address configured for device");
     }
-    info!("Setting integrator FB{level} on front-end {ip}");
-    post_field(
-        &client()?,
-        &base_url(ip),
-        "integrator",
-        &format!("FB{level}"),
-    )
-    .await
+    match detect_api(ip).await {
+        FrontEndApi::Http => {
+            info!("Setting integrator FB{level} on front-end {ip} (HTTP)");
+            post_field(
+                &client()?,
+                &base_url(ip),
+                "integrator",
+                &format!("FB{level}"),
+            )
+            .await
+        }
+        FrontEndApi::Legacy => {
+            info!("Setting integrator FB{level} on front-end {ip} (legacy TCP)");
+            legacy::send_settings(ip, &legacy::settings_for_sensitivity(level)).await
+        }
+    }
 }
 
 /// Put a front-end back into normal operation at `FB{level}`: external input (calibration
@@ -69,11 +111,19 @@ pub async fn clear_calibration(ip: &str, level: u8) -> anyhow::Result<()> {
     if ip.is_empty() {
         anyhow::bail!("No IP address configured for device");
     }
-    info!("Clearing calibration (EXT, FB{level}) on front-end {ip}");
-    let client = client()?;
-    let base = base_url(ip);
-    post_field(&client, &base, "io/input", &"EXT").await?;
-    post_field(&client, &base, "integrator", &format!("FB{level}")).await
+    match detect_api(ip).await {
+        FrontEndApi::Http => {
+            info!("Clearing calibration (EXT, FB{level}) on front-end {ip} (HTTP)");
+            let client = client()?;
+            let base = base_url(ip);
+            post_field(&client, &base, "io/input", &"EXT").await?;
+            post_field(&client, &base, "integrator", &format!("FB{level}")).await
+        }
+        FrontEndApi::Legacy => {
+            info!("Clearing calibration (EXT, FB{level}) on front-end {ip} (legacy TCP)");
+            legacy::send_settings(ip, &legacy::settings_for_clear_calibration(level)).await
+        }
+    }
 }
 
 /// Set the box's `meta.device_name` to `name`, but only if it has none set yet.
@@ -87,7 +137,14 @@ pub async fn ensure_device_name(ip: &str, name: &str) -> anyhow::Result<()> {
     if ip.is_empty() {
         anyhow::bail!("No IP address configured for device");
     }
-    ensure_device_name_at(&client()?, &base_url(ip), name).await
+    // Naming is HTTP-only (needs GET /settings). Legacy boxes can't do it — skip quietly.
+    match detect_api(ip).await {
+        FrontEndApi::Http => ensure_device_name_at(&client()?, &base_url(ip), name).await,
+        FrontEndApi::Legacy => {
+            info!("Legacy front-end {ip}: skipping device_name write");
+            Ok(())
+        }
+    }
 }
 
 async fn ensure_device_name_at(
@@ -123,6 +180,119 @@ async fn ensure_device_name_at(
         anyhow::bail!("{base_url}/settings returned {status}: {body}");
     }
     Ok(())
+}
+
+/// Legacy control path: older front-end boxes take the whole `Settings` object as a JSON
+/// line over a raw TCP socket on port 56000 (no HTTP). Transitional — remove once every
+/// box runs `clara-chg-fe-2`.
+mod legacy {
+    use serde::Serialize;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpStream;
+    use tracing::info;
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct FrontEndSettings {
+        pub calibration: Calibration,
+        pub io: InputOutput,
+        pub integrator: String,
+        pub power: Power,
+        pub meta: Meta,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct Calibration {
+        pub reference: String,
+        pub level: u16,
+        pub trigger: u16,
+        pub offset: u16,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct InputOutput {
+        pub input: String,
+        pub output: String,
+        pub reference: String,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct Power {
+        pub positive: bool,
+        pub negative: bool,
+        pub integrator: bool,
+    }
+
+    #[derive(Clone, Debug, Serialize)]
+    pub struct Meta {
+        pub last_changed: [u64; 2],
+        pub device_name: String,
+        pub device_location: String,
+    }
+
+    impl Default for FrontEndSettings {
+        fn default() -> Self {
+            Self {
+                calibration: Calibration {
+                    reference: "REF2048mV".to_string(),
+                    level: 128,
+                    trigger: 1,
+                    offset: 1,
+                },
+                io: InputOutput {
+                    input: "EXT".to_string(),
+                    output: "TERM".to_string(),
+                    reference: "REF500mV".to_string(),
+                },
+                integrator: "FB0".to_string(),
+                power: Power {
+                    positive: true,
+                    negative: true,
+                    integrator: true,
+                },
+                meta: Meta {
+                    last_changed: [0, 0],
+                    device_name: String::new(),
+                    device_location: String::new(),
+                },
+            }
+        }
+    }
+
+    /// Settings for a given sensitivity level (0–5 → FB0–FB5); only the integrator differs
+    /// from the normal-operation default (which already sets `io.input = "EXT"`).
+    pub fn settings_for_sensitivity(level: u8) -> FrontEndSettings {
+        FrontEndSettings {
+            integrator: format!("FB{level}"),
+            ..Default::default()
+        }
+    }
+
+    /// Same as [`settings_for_sensitivity`] but forcing `io.input = "EXT"` (calibration off).
+    pub fn settings_for_clear_calibration(level: u8) -> FrontEndSettings {
+        let mut settings = settings_for_sensitivity(level);
+        settings.io.input = "EXT".to_string();
+        settings
+    }
+
+    /// Send a settings blob to a legacy front-end as one newline-terminated JSON line.
+    pub async fn send_settings(ip: &str, settings: &FrontEndSettings) -> anyhow::Result<()> {
+        send_settings_to(&format!("{ip}:{}", crate::consts::FRONT_END_PORT), settings).await
+    }
+
+    /// As [`send_settings`] but to a full `host:port` address (so tests can use a random port).
+    pub async fn send_settings_to(addr: &str, settings: &FrontEndSettings) -> anyhow::Result<()> {
+        let mut stream = tokio::time::timeout(
+            crate::consts::FRONT_END_CONNECT_TIMEOUT,
+            TcpStream::connect(addr),
+        )
+        .await??;
+        let json = serde_json::to_string(settings)?;
+        stream.write_all(json.as_bytes()).await?;
+        stream.write_all(b"\n").await?;
+        stream.flush().await?;
+        info!("Legacy settings sent to {addr}");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -250,5 +420,73 @@ mod tests {
             .to_string();
         assert!(err.contains("400"), "{err}");
         assert!(err.contains("Offset must be at least 1"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn detects_http_rest_box() {
+        let (base, _settings) = spawn_fake_settings("X").await;
+        assert!(matches!(detect_api_at(&base).await, FrontEndApi::Http));
+    }
+
+    /// Raw-TCP fake standing in for a legacy box: records the first line of each connection
+    /// then closes. Not HTTP, so the probe classifies it as legacy.
+    async fn spawn_raw_tcp() -> (String, Arc<Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let store = lines.clone();
+        tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                let store = store.clone();
+                tokio::spawn(async move {
+                    let mut line = String::new();
+                    if BufReader::new(sock).read_line(&mut line).await.is_ok()
+                        && !line.trim().is_empty()
+                    {
+                        store.lock().unwrap().push(line.trim_end().to_string());
+                    }
+                    // socket drops → connection closes; the HTTP probe sees no valid
+                    // response and falls back to legacy.
+                });
+            }
+        });
+        (addr, lines)
+    }
+
+    #[tokio::test]
+    async fn detects_legacy_and_sends_json_blob() {
+        let (addr, lines) = spawn_raw_tcp().await;
+
+        assert!(matches!(
+            detect_api_at(&format!("http://{addr}")).await,
+            FrontEndApi::Legacy
+        ));
+
+        legacy::send_settings_to(&addr, &legacy::settings_for_sensitivity(3))
+            .await
+            .unwrap();
+
+        // send_settings_to returns once flushed; the server records asynchronously.
+        let blob = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(l) = lines
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|l| l.starts_with('{'))
+                    .cloned()
+                {
+                    return l;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("no JSON line received from legacy box");
+
+        let v: serde_json::Value = serde_json::from_str(&blob).unwrap();
+        assert_eq!(v["integrator"], "FB3");
+        assert_eq!(v["io"]["input"], "EXT");
     }
 }

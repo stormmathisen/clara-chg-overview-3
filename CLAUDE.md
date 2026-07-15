@@ -85,7 +85,10 @@ Device control targets two different transports:
    and clear-calibration are applied, via per-field endpoints (`POST /settings/integrator`,
    `POST /settings/io/input`) using a `reqwest` client (`set_sensitivity`, `clear_calibration`).
    Per-field writes dodge the device's CAL-mode gate that would reject a full-object POST. This
-   is *not* EPICS at all.
+   is *not* EPICS at all. **Dual-protocol:** each control action first `detect_api`s the box
+   (a short `GET /settings` probe); older front-ends that don't speak HTTP fall back to the
+   `legacy` module's raw-TCP JSON `Settings` blob on the same port. Transitional — drop the
+   fallback once every box runs `clara-chg-fe-2`.
 2. **`epics::caput`** — writes scalar PVs over Channel Access using the **native
    `epicars` client** (`Client::write_pv`): `corrA`/`corrB` (zero-WCM), `DQcal`,
    sweep-timing windows, restore-defaults. An `f64` becomes a `DbrValue::Double`.
