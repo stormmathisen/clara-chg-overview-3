@@ -9,10 +9,12 @@ pub const DEFAULT_PORT: u16 = 49195;
 /// Cap on inbound WebSocket message size.
 pub const MAX_WS_MESSAGE_SIZE: usize = 64 * 1024;
 
-/// TCP port of the device front-end box (settings push + reachability ping).
+/// TCP port of the device front-end box (HTTP control API + reachability ping).
 pub const FRONT_END_PORT: u16 = 56000;
-/// Connect timeout for talking to a front-end box.
+/// Connect timeout for the reachability ping (a bare TCP connect to the HTTP port).
 pub const FRONT_END_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
+/// Timeout for an HTTP control request to a front-end box.
+pub const FRONT_END_HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 
 // --- Background task cadences ---------------------------------------------------
 
@@ -28,6 +30,11 @@ pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 /// How long the front-end trigger stays off during a reset — long enough for the
 /// PICs on the front-end boxes to reboot.
 pub const RESET_WAIT: Duration = Duration::from_secs(65);
+
+/// Exponential-backoff bounds shared by the EPICS monitors and the front-end SSE
+/// listeners: first retry after this, doubling up to `MAX_RETRY_DELAY`.
+pub const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
+pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 // --- Chart broadcast ------------------------------------------------------------
 

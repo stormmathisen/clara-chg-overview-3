@@ -29,6 +29,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
 anyhow = "1"
+# Front-end boxes are controlled over plain HTTP (see hardware.rs). No TLS feature —
+# these are http:// on the local control network — which also keeps openssl out of the image.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 
 [dev-dependencies]
 tempfile = "3"

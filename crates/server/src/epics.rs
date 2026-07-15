@@ -1,3 +1,4 @@
+use crate::consts::{INITIAL_RETRY_DELAY, MAX_RETRY_DELAY};
 use crate::state::AppState;
 use epicars::client::Client;
 use epicars::dbr::DbrValue;
@@ -5,8 +6,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 /// Bound on each stage of a PV write (client creation, then the CA put). A PV that
 /// does not exist will burn this once during the channel search.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);

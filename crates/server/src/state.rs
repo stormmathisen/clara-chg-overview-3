@@ -168,6 +168,9 @@ pub struct DeviceState {
     pub connected: bool,
     pub fe_alive: bool,
     pub last_data_time: f64,
+    /// Set when a `/events` SSE change tells us the sensitivity moved outside this program
+    /// (so calibration factors may not match config); cleared when we re-apply sensitivity.
+    pub calibration_mismatch: bool,
 }
 
 /// Global application state, shared across all tasks
@@ -175,6 +178,9 @@ pub struct InnerState {
     pub devices: Vec<DeviceState>,
     pub buffer_size: usize,
     pub device_order: Vec<String>,
+    /// Live front-end reset countdown `(remaining_secs, total_secs)`, or `None`. Transient
+    /// (not persisted); read into `Init` so newly connected clients show the same countdown.
+    pub reset_progress: Option<(u32, u32)>,
     /// Device name -> index into `devices`, so lookups by name are O(1) instead of a
     /// linear scan. `devices` is built once at startup and never reordered (the UI
     /// reorders `device_order`, not `devices`), so this stays valid for the process life.
@@ -194,6 +200,7 @@ impl InnerState {
             devices,
             buffer_size,
             device_order,
+            reset_progress: None,
             name_index,
         }
     }

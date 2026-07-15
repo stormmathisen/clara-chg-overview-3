@@ -118,20 +118,64 @@ pub fn draw_device_controls(
             );
         });
 
-        // Sensitivity selector (only for devices with sensitivities)
+        // Sensitivity selector (only for devices with sensitivities). When the sensitivity
+        // was changed outside this program the calibration factors may be stale, so we
+        // highlight the whole row with an orange band + solid selected button; re-clicking
+        // the selected level re-applies it (and its config calibration factors), clearing it.
         if !device.sensitivities.is_empty() {
-            ui.horizontal(|ui: &mut egui::Ui| {
-                ui.label("Sensitivity:");
-                for (i, sens) in device.sensitivities.iter().enumerate() {
-                    let selected = i == device.current_sensitivity;
-                    let label = format!("FB{sens}");
-                    if ui.selectable_label(selected, &label).clicked() && !selected {
-                        out_msgs.push(ClientMessage::SetSensitivity {
-                            device: device.name.clone(),
-                            index: i,
-                        });
+            let mismatch = device.calibration_mismatch;
+            let tooltip = "Sensitivity was changed outside this program — its calibration \
+                           factors may no longer match the config. Click the selected level \
+                           to re-apply them and clear this warning.";
+            // Transparent frame normally (no layout shift); an orange band when mismatched.
+            let frame = if mismatch {
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_rgb(120, 60, 0))
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .corner_radius(4u8)
+            } else {
+                egui::Frame::NONE
+            };
+            frame.show(ui, |ui: &mut egui::Ui| {
+                ui.horizontal(|ui: &mut egui::Ui| {
+                    let label = egui::RichText::new("Sensitivity:");
+                    let resp = ui.label(if mismatch {
+                        label.color(egui::Color32::ORANGE).strong()
+                    } else {
+                        label
+                    });
+                    if mismatch {
+                        resp.on_hover_text(tooltip);
                     }
-                }
+                    for (i, sens) in device.sensitivities.iter().enumerate() {
+                        let selected = i == device.current_sensitivity;
+                        // Loud solid-orange button for the active level while mismatched.
+                        let resp = if mismatch && selected {
+                            ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new(format!("FB{sens}"))
+                                        .color(egui::Color32::BLACK)
+                                        .strong(),
+                                )
+                                .fill(egui::Color32::ORANGE),
+                            )
+                        } else {
+                            ui.selectable_label(selected, format!("FB{sens}"))
+                        };
+                        let resp = if mismatch {
+                            resp.on_hover_text(tooltip)
+                        } else {
+                            resp
+                        };
+                        // No `!selected` guard: clicking the current level re-applies it.
+                        if resp.clicked() {
+                            out_msgs.push(ClientMessage::SetSensitivity {
+                                device: device.name.clone(),
+                                index: i,
+                            });
+                        }
+                    }
+                });
             });
         }
 

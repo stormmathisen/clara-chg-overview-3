@@ -63,6 +63,13 @@ Three crates (`crates/`):
   at 10 Hz and pushes `ChartData` snapshots to every connected client.
 - **Commands (clients → hardware):** `ws.rs` receives `ClientMessage`s;
   `commands.rs` executes them (see write paths below).
+- **Front-end events (box → state):** `fe_events.rs` spawns one SSE listener per device
+  with a front-end box (`GET ip:56000/events`, reconnecting with the same backoff). The box
+  streams its full `Settings` on *any* setting change from *any* client, so this catches a
+  sensitivity changed outside this program (device web UI, front panel) — it reconciles
+  `current_sensitivity` and pushes a `StateUpdate` + notification. Our own writes are
+  de-duped implicitly: `handle_set_sensitivity` updates `current_sensitivity` before the
+  echo arrives, so the index already matches and no notification fires.
 - **Watchdog:** marks a device disconnected after `WATCHDOG_STALE_SECS` (60s) with no data.
 - **Front-end ping:** every 30s, TCP-connects to each device `ip:56000` to set `fe_alive`.
 - **Persistence:** every 30s, `state.json` is written atomically (temp + rename). Holds
@@ -73,10 +80,15 @@ Three crates (`crates/`):
 
 Device control targets two different transports:
 
-1. **`hardware.rs`** — serializes `FrontEndSettings` to JSON and sends it over a raw TCP
-   socket to the device front-end box at **`ip:56000`**. This is how sensitivity/gain and
-   clear-calibration are applied (`settings_for_sensitivity`, `send_settings`). This is
-   *not* EPICS at all.
+1. **`hardware.rs`** — POSTs to the device front-end box's **HTTP API** at **`ip:56000`**
+   (the `clara-chg-fe-2` firmware; see its `API_REFERENCE.md`). This is how sensitivity/gain
+   and clear-calibration are applied, via per-field endpoints (`POST /settings/integrator`,
+   `POST /settings/io/input`) using a `reqwest` client (`set_sensitivity`, `clear_calibration`).
+   Per-field writes dodge the device's CAL-mode gate that would reject a full-object POST. This
+   is *not* EPICS at all. **Dual-protocol:** each control action first `detect_api`s the box
+   (a short `GET /settings` probe); older front-ends that don't speak HTTP fall back to the
+   `legacy` module's raw-TCP JSON `Settings` blob on the same port. Transitional — drop the
+   fallback once every box runs `clara-chg-fe-2`.
 2. **`epics::caput`** — writes scalar PVs over Channel Access using the **native
    `epicars` client** (`Client::write_pv`): `corrA`/`corrB` (zero-WCM), `DQcal`,
    sweep-timing windows, restore-defaults. An `f64` becomes a `DbrValue::Double`.

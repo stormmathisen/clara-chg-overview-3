@@ -84,6 +84,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
                 fe_alive: d.fe_alive,
                 last_data_time: d.last_data_time,
                 defaults,
+                calibration_mismatch: d.calibration_mismatch,
             }
         })
         .collect();
@@ -91,6 +92,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
         devices,
         buffer_size: state.buffer_size,
         device_order: state.device_order.clone(),
+        reset_progress: state.reset_progress,
     }
 }
 
