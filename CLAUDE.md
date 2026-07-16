@@ -123,7 +123,9 @@ or external IOC required. It sets process-wide env, so don't run another CA test
   `digitizer`, `ip`, a `sensitivities` array, a `pvs` map (must contain `charge`), and a
   `defaults` map. Config is validated on load (`server/config.rs`).
 - `current_sensitivity` is an **index into the `sensitivities` array**, not the gain value.
-  It defaults to the *last* index (max sensitivity) when nothing is persisted.
+  It defaults to the *last* index when nothing is persisted — the highest `FB` number,
+  which is the **least** sensitive level (FB0 is the most sensitive), so the default is
+  the safe end of the range.
 - **ICT devices have no `sensitivities`** (the field is `#[serde(default)]`, so it is an
   empty vec). They are excluded from sensitivity validation, `SetSensitivity`, and
   `ClearCalibration`, and they have no front-end box (`ip` is empty).
