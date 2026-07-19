@@ -2,40 +2,30 @@
 # Pinned rather than floating on `rust:bookworm` so image builds are reproducible.
 FROM rust:1.94-bookworm AS builder
 
-# Install trunk and wasm target
+# Prebuilt trunk (compiling it from source costs minutes) + wasm target.
+# Keep the version in step with what's used locally.
+ARG TRUNK_VERSION=v0.21.14
 RUN rustup target add wasm32-unknown-unknown \
-    && cargo install trunk --locked
+    && curl -fsSL "https://github.com/trunk-rs/trunk/releases/download/${TRUNK_VERSION}/trunk-x86_64-unknown-linux-gnu.tar.gz" \
+       | tar -xz -C /usr/local/bin trunk
 
 WORKDIR /build
 
-# Copy manifests first for layer caching
-COPY Cargo.toml Cargo.lock* ./
-COPY crates/shared/Cargo.toml crates/shared/Cargo.toml
-COPY crates/server/Cargo.toml crates/server/Cargo.toml
-COPY crates/frontend/Cargo.toml crates/frontend/Cargo.toml
-
-# Create stub sources so cargo can resolve and cache dependencies
-RUN mkdir -p crates/shared/src crates/server/src crates/frontend/src \
-    && echo "pub mod messages; pub mod config;" > crates/shared/src/lib.rs \
-    && echo "fn main() {}" > crates/server/src/main.rs \
-    && echo "" > crates/frontend/src/lib.rs \
-    && touch crates/shared/src/messages.rs crates/shared/src/config.rs \
-    && cargo build --release -p server 2>/dev/null || true \
-    && rm -rf crates/ \
-    && rm -f target/release/server target/release/server.d \
-    && rm -f target/release/deps/server-* target/release/deps/shared-* \
-    && rm -f target/release/deps/libshared-*
-
-# Copy real source code
+COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 
-# Build server
-RUN cargo build --release -p server
+# Cache mounts keep the cargo registry and the incremental target dir on the
+# build host across builds, so a code-only change rebuilds just the changed
+# crates. Artifacts must be copied out — cache mounts aren't part of the layer.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p server \
+    && cp target/release/server /server
 
-# Build frontend WASM
-COPY crates/frontend/index.html crates/frontend/index.html
-COPY crates/frontend/Trunk.toml crates/frontend/Trunk.toml
-RUN cd crates/frontend && trunk build --release
+# Frontend WASM (frontend_dist/ lands outside target/, so it persists in the layer)
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cd crates/frontend && trunk build --release
 
 # Stage 2: Minimal runtime image
 #
@@ -55,7 +45,7 @@ RUN useradd -r -s /usr/sbin/nologin appuser
 
 WORKDIR /app
 
-COPY --from=builder /build/target/release/server /app/server
+COPY --from=builder /server /app/server
 COPY --from=builder /build/frontend_dist/ /app/frontend_dist/
 COPY config/ /app/config/
 
