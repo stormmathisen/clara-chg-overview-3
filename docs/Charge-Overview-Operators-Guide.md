@@ -125,8 +125,10 @@ Two yellow warnings can appear next to the stats line:
 > **⚠ PEAK MISALIGNED** — the app checks (at startup, and whenever the sample
 > window PVs change) that the configured peak window actually brackets the pulse
 > in the digitizer trace — the negative-going dip for an FCUP, the positive peak
-> for the WCM. If it doesn't, charge is being integrated in the wrong place: run
-> **Sweep Timing** for that device.
+> for the WCM. The check only judges a trace with a clear pulse in it (with beam
+> off there is only noise, so it waits and retries). If the window misses the
+> pulse, charge is being integrated in the wrong place: run **Sweep Timing** for
+> that device.
 
 ---
 

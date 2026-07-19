@@ -26,6 +26,9 @@ const CAGET_TIMEOUT: Duration = Duration::from_secs(5);
 const CHECK_WAVEFORMS: usize = 10;
 /// Bound on collecting those waveforms.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// Minimum peak prominence, in robust-σ units of the averaged waveform's noise,
+/// for the located peak to be trusted as a real pulse rather than noise.
+const MIN_PEAK_SIGNIFICANCE: f64 = 7.0;
 
 /// One device's checkable peak window.
 struct Target {
@@ -71,6 +74,74 @@ pub fn spawn_peak_checkers(state: AppState, broadcaster: Broadcaster) {
     });
 }
 
+/// True when the extreme of the sample-wise mean waveform stands out from the
+/// baseline: |extreme − median| > MIN_PEAK_SIGNIFICANCE × robust σ (MAD·1.4826).
+/// Median/MAD are used so the pulse itself doesn't inflate the noise estimate; a
+/// flat or empty trace (σ = 0) is never significant.
+fn peak_is_significant(waveforms: &[Vec<f64>], find_max: bool) -> bool {
+    let len = waveforms.iter().map(Vec::len).min().unwrap_or(0);
+    if len == 0 {
+        return false;
+    }
+    let mean: Vec<f64> = (0..len)
+        .map(|i| waveforms.iter().map(|w| w[i]).sum::<f64>() / waveforms.len() as f64)
+        .collect();
+
+    let median_of = |v: &mut Vec<f64>| -> f64 {
+        v.sort_unstable_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+    let median = median_of(&mut mean.clone());
+    let sigma = 1.4826 * median_of(&mut mean.iter().map(|x| (x - median).abs()).collect());
+
+    let extreme = mean
+        .iter()
+        .copied()
+        .reduce(|a, b| if (b > a) == find_max { b } else { a })
+        .unwrap_or(median);
+    sigma > 0.0 && (extreme - median).abs() > MIN_PEAK_SIGNIFICANCE * sigma
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic pseudo-noise around zero, amplitude ±0.5.
+    fn noise(len: usize, seed: usize) -> Vec<f64> {
+        (0..len)
+            .map(|i| (((i * 31 + seed * 17) % 100) as f64 / 100.0) - 0.5)
+            .collect()
+    }
+
+    #[test]
+    fn noise_only_is_not_significant() {
+        let waveforms: Vec<Vec<f64>> = (0..10).map(|s| noise(500, s)).collect();
+        assert!(!peak_is_significant(&waveforms, true));
+        assert!(!peak_is_significant(&waveforms, false));
+    }
+
+    #[test]
+    fn real_pulse_is_significant_flat_trace_is_not() {
+        let waveforms: Vec<Vec<f64>> = (0..10)
+            .map(|s| {
+                let mut w = noise(500, s);
+                w[250] = 50.0; // positive-going pulse well above the noise
+                w
+            })
+            .collect();
+        assert!(peak_is_significant(&waveforms, true));
+
+        let inverted: Vec<Vec<f64>> = waveforms
+            .iter()
+            .map(|w| w.iter().map(|x| -x).collect())
+            .collect();
+        assert!(peak_is_significant(&inverted, false));
+
+        assert!(!peak_is_significant(&[vec![0.0; 500]], true));
+        assert!(!peak_is_significant(&[], true));
+    }
+}
+
 /// Poll the window PVs; on the first read (boot) and on any change, locate the actual
 /// peak and reconcile the device's `peak_misaligned` flag. Failures just retry on the
 /// next poll, so a device that is down produces a warning log, not a task death.
@@ -108,6 +179,12 @@ async fn peak_check_loop(state: AppState, broadcaster: Broadcaster, t: Target) {
             warn!("[{}] peak check: no usable waveform data", t.name);
             continue;
         };
+        // With no beam the argmax/argmin is just noise and would judge alignment
+        // spuriously. Don't record the window as checked: retry each poll until a
+        // real pulse shows up. The previous verdict, if any, stands meanwhile.
+        if !peak_is_significant(&waveforms, t.find_max) {
+            continue;
+        }
         last_checked = Some((low, high));
 
         let misaligned = peak < low || peak > high;
