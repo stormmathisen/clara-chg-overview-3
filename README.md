@@ -36,6 +36,15 @@ EPICS monitors are persistent — if a connection drops, each PV subscription
 automatically reconnects with exponential backoff. A watchdog detects silent
 connection drops (no data for 60s) and marks devices as disconnected.
 
+Devices with configured per-sensitivity `saturation_charges` show a yellow
+saturation warning on their chart when the rolling average exceeds the limit for
+the current sensitivity. An optional **auto gain** mode (off by default,
+persisted server-side) automatically switches a saturating WCM/FCUP to the next
+less sensitive level, with a warning notification. A background checker also
+verifies — at startup and whenever the peak-window PVs change — that each
+WCM/FCUP peak window brackets the actual peak in the digitizer signal, flagging
+misaligned windows on the chart.
+
 All client connections and commands are logged to an append-only audit log file
 in JSON-lines format, with automatic rotation at 100 MB.
 
@@ -141,6 +150,9 @@ docker run -p 49195:49195 \
 - **Device reordering** via up/down buttons in the controls panel
 - **Last seen** timestamp per device in the controls panel
 - **Sensitivity selection** dynamically from config (supports any FB level)
+- **Saturation warning** (⚠ SATURATING) per chart when the rolling average exceeds the configured limit
+- **Auto gain** toggle to switch saturating WCM/FCUP devices to a less sensitive level automatically
+- **Peak-window check** (⚠ PEAK MISALIGNED) when the sample window misses the digitizer peak
 - **Buffer size** control to adjust rolling window length
 - **Notifications** for command results and errors (auto-dismiss after 10s, errors persist)
 - **Audit logging** of all client connections and commands (JSON-lines format)

@@ -70,6 +70,18 @@ Three crates (`crates/`):
   `current_sensitivity` and pushes a `StateUpdate` + notification. Our own writes are
   de-duped implicitly: `handle_set_sensitivity` updates `current_sensitivity` before the
   echo arrives, so the index already matches and no notification fires.
+- **Auto gain (state → hardware):** `commands.rs` `spawn_auto_gain` ticks at 1 Hz; when
+  `InnerState.auto_gain` is on (persisted, toggled via `SetAutoGain`/`AutoGainChanged`),
+  a connected device whose ~1 s rolling mean magnitude exceeds
+  `saturation_charges[current_sensitivity]` is stepped to the next index through
+  `handle_set_sensitivity` (so the WCM↔DQ coupling applies), with a 5 s per-device
+  cooldown against cascades. The decision deliberately uses `mean_of_last(10)`, not the
+  laggy full-buffer mean shown in the UI.
+- **Peak check:** `peak_check.rs` spawns one task per WCM/FCUP that polls the
+  `peak_low`/`peak_high` PVs every 30 s (via `epics::caget`); on boot and on any change
+  it averages 10 digitizer waveforms (argmax WCM / argmin FCUP, same as sweep timing)
+  and reconciles `peak_misaligned` (in `DeviceStatus`, pushed via `PeakAlignment` +
+  warning notification).
 - **Watchdog:** marks a device disconnected after `WATCHDOG_STALE_SECS` (60s) with no data.
 - **Front-end ping:** every 30s, TCP-connects to each device `ip:56000` to set `fe_alive`.
 - **Persistence:** every 30s, `state.json` is written atomically (temp + rename). Holds
@@ -129,6 +141,9 @@ or external IOC required. It sets process-wide env, so don't run another CA test
 - **ICT devices have no `sensitivities`** (the field is `#[serde(default)]`, so it is an
   empty vec). They are excluded from sensitivity validation, `SetSensitivity`, and
   `ClearCalibration`, and they have no front-end box (`ip` is empty).
+- `saturation_charges` is a per-sensitivity array of limits in pC, parallel to
+  `sensitivities` (length-validated); empty disables saturation warnings/auto gain for
+  that device (DQ, ICT).
 - `defaults` values are `DefaultValue` (untagged: scalar or per-sensitivity array).
   `for_sensitivity(index)` returns the array element for the current sensitivity (or the
   scalar / last element). Many calibration constants are per-sensitivity arrays, and their
