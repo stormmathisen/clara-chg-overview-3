@@ -5,6 +5,7 @@ mod consts;
 mod epics;
 mod fe_events;
 mod hardware;
+mod peak_check;
 mod state;
 mod ws;
 
@@ -77,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
                 fe_alive: false,
                 last_data_time: 0.0,
                 calibration_mismatch: false,
+                peak_misaligned: false,
             }
         })
         .collect();
@@ -84,11 +86,9 @@ async fn main() -> anyhow::Result<()> {
 
     let device_order = reconcile_device_order(&persisted.device_order, &devices);
 
-    let app_state: AppState = Arc::new(RwLock::new(InnerState::new(
-        devices,
-        buffer_size,
-        device_order,
-    )));
+    let mut inner = InnerState::new(devices, buffer_size, device_order);
+    inner.auto_gain = persisted.auto_gain;
+    let app_state: AppState = Arc::new(RwLock::new(inner));
 
     // Start EPICS subscriptions
     let (_epics, mut epics_rx) = epics::EpicsManager::start(&app_state).await?;
@@ -108,6 +108,12 @@ async fn main() -> anyhow::Result<()> {
 
     let broadcaster = ws::new_broadcaster();
     ws::spawn_chart_broadcaster(app_state.clone(), broadcaster.clone());
+
+    // Switch saturating devices to a less sensitive level when auto gain is enabled.
+    commands::spawn_auto_gain(app_state.clone(), broadcaster.clone());
+
+    // Warn when a configured peak window misses the actual digitizer peak.
+    peak_check::spawn_peak_checkers(app_state.clone(), broadcaster.clone());
 
     // Listen for sensitivity changes made outside this program (device web UI, etc.)
     fe_events::spawn_fe_event_listeners(app_state.clone(), broadcaster.clone());
@@ -215,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
                     .map(|d| (d.name.clone(), d.current_sensitivity))
                     .collect(),
                 device_order: s.device_order.clone(),
+                auto_gain: s.auto_gain,
             };
             drop(s);
             p.save(&state_path_clone);
@@ -297,6 +304,7 @@ mod tests {
                 digitizer: String::new(),
                 ip: String::new(),
                 sensitivities: Vec::new(),
+                saturation_charges: Vec::new(),
                 pvs: std::collections::HashMap::new(),
                 defaults: std::collections::HashMap::new(),
             },
@@ -307,6 +315,7 @@ mod tests {
             fe_alive: false,
             last_data_time: 0.0,
             calibration_mismatch: false,
+            peak_misaligned: false,
         }
     }
 

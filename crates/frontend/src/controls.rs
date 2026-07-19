@@ -246,6 +246,7 @@ fn restore_defaults_tooltip(device: &DeviceStatus) -> String {
 }
 
 /// Draw global controls
+#[allow(clippy::too_many_arguments)] // a UI draw fn: every arg is one widget's state
 pub fn draw_global_controls(
     ui: &mut egui::Ui,
     buffer: &mut BufferState,
@@ -254,6 +255,7 @@ pub fn draw_global_controls(
     charts: &[DeviceChart],
     y_axis: &mut YAxisState,
     reset_progress: Option<(u32, u32)>,
+    auto_gain: bool,
 ) {
     let YAxisState {
         scale: y_scale,
@@ -308,6 +310,22 @@ pub fn draw_global_controls(
                 // Reset to current value on invalid input
                 buffer.input = buffer.size.to_string();
             }
+        }
+        ui.separator();
+        // Server-side setting shared by all clients, so the checkbox edits a local
+        // copy and the real state arrives back via AutoGainChanged.
+        let mut auto_gain_ui = auto_gain;
+        if ui
+            .checkbox(&mut auto_gain_ui, "Auto gain")
+            .on_hover_text(
+                "Automatically switch a saturating FCUP/WCM to a less sensitive level \
+                 when its rolling average exceeds the saturation limit",
+            )
+            .changed()
+        {
+            out_msgs.push(ClientMessage::SetAutoGain {
+                enabled: auto_gain_ui,
+            });
         }
         ui.separator();
         let is_frozen = frozen_stats.is_some();

@@ -171,6 +171,9 @@ pub struct DeviceState {
     /// Set when a `/events` SSE change tells us the sensitivity moved outside this program
     /// (so calibration factors may not match config); cleared when we re-apply sensitivity.
     pub calibration_mismatch: bool,
+    /// Set by the peak-alignment checker when the configured peak window does not
+    /// bracket the actual digitizer peak. Transient (re-checked on boot).
+    pub peak_misaligned: bool,
 }
 
 /// Global application state, shared across all tasks
@@ -181,6 +184,8 @@ pub struct InnerState {
     /// Live front-end reset countdown `(remaining_secs, total_secs)`, or `None`. Transient
     /// (not persisted); read into `Init` so newly connected clients show the same countdown.
     pub reset_progress: Option<(u32, u32)>,
+    /// Whether automatic gain switching on saturation is enabled. Persisted.
+    pub auto_gain: bool,
     /// Device name -> index into `devices`, so lookups by name are O(1) instead of a
     /// linear scan. `devices` is built once at startup and never reordered (the UI
     /// reorders `device_order`, not `devices`), so this stays valid for the process life.
@@ -201,6 +206,7 @@ impl InnerState {
             buffer_size,
             device_order,
             reset_progress: None,
+            auto_gain: false,
             name_index,
         }
     }
@@ -230,6 +236,8 @@ pub struct PersistedState {
     pub sensitivities: std::collections::HashMap<String, usize>,
     #[serde(default)]
     pub device_order: Vec<String>,
+    #[serde(default)]
+    pub auto_gain: bool,
 }
 
 impl PersistedState {
@@ -265,6 +273,7 @@ impl PersistedState {
             buffer_size: 1000,
             sensitivities: std::collections::HashMap::new(),
             device_order: Vec::new(),
+            auto_gain: false,
         }
     }
 }
@@ -437,6 +446,7 @@ mod tests {
             buffer_size: 500,
             sensitivities: [("dev1".to_string(), 2)].into_iter().collect(),
             device_order: vec!["dev1".to_string(), "dev2".to_string()],
+            auto_gain: true,
         };
         state.save(&path);
 
@@ -444,6 +454,7 @@ mod tests {
         assert_eq!(loaded.buffer_size, 500);
         assert_eq!(loaded.sensitivities.get("dev1"), Some(&2));
         assert_eq!(loaded.device_order, vec!["dev1", "dev2"]);
+        assert!(loaded.auto_gain);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

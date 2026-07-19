@@ -3,6 +3,7 @@ CLA-S01-DIA-WCM-01:
   digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH0'
   ip: '192.168.114.14'
   sensitivities: [ 3, 4 ]
+  saturation_charges: [ 150, 300 ]
   pvs:
     charge: 'CLA-S01-DIA-WCM-01:Q'
     reset_trigger: 'CLA-C28-TIM-EVR-01:FrontUnivOut0-Ena-SP'
@@ -45,6 +46,7 @@ CLA-SP1-DIA-FCUP-01:
   digitizer: 'EBT-B03-IOC-CS-04:FMC1:CH1'
   ip: '192.168.114.10'
   sensitivities: [ 0, 1, 2, 3, 4 ]
+  saturation_charges: [ 10, 20, 40, 150, 300 ]
   pvs:
     charge: 'CLA-SP1-DIA-FCUP-01:Q'
     reset_trigger: 'CLA-C28-TIM-EVR-01:FrontUnivOut0-Ena-SP'
@@ -67,6 +69,7 @@ CLA-SP2-DIA-FCUP-01:
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH0'
   ip: '192.168.114.11'
   sensitivities: [ 0, 1, 2, 3, 4 ]
+  saturation_charges: [ 10, 20, 40, 150, 300 ]
   pvs:
     charge: 'CLA-SP2-DIA-FCUP-01:Q'
     reset_trigger: 'CLA-C28-TIM-EVR-01:FrontUnivOut0-Ena-SP'
@@ -89,6 +92,7 @@ CLA-SP3-DIA-FCUP-01:
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH1'
   ip: '192.168.114.12'
   sensitivities: [ 0, 1, 2, 3, 4 ]
+  saturation_charges: [ 10, 20, 40, 150, 300 ]
   pvs:
     charge: 'CLA-SP3-DIA-FCUP-01:Q'
     reset_trigger: 'CLA-C28-TIM-EVR-01:FrontUnivOut0-Ena-SP'
@@ -111,6 +115,7 @@ CLA-S07-DIA-FCUP-01:
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH2'
   ip: '192.168.114.13'
   sensitivities: [ 0, 1, 2, 3, 4 ]
+  saturation_charges: [ 10, 20, 40, 150, 300 ]
   pvs:
     charge: 'CLA-S07-DIA-FCUP-01:Q'
     reset_trigger: 'CLA-C28-TIM-EVR-01:FrontUnivOut0-Ena-SP'
@@ -133,6 +138,7 @@ CLA-FED-DIA-FCUP-01:
   digitizer: 'CLA-C30-IOC-CS-01:FMC1:CH6'
   ip: '192.168.114.9'
   sensitivities: [ 0, 1, 2, 3, 4 ]
+  saturation_charges: [ 10, 20, 40, 150, 300 ]
   pvs:
     charge: 'CLA-FED-DIA-FCUP-01:Q'
     reset_trigger: 'CLA-C28-TIM-EVR-01:FrontUnivOut0-Ena-SP'

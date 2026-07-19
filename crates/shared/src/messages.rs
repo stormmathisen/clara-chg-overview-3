@@ -41,6 +41,10 @@ pub struct DeviceStatus {
     pub device_type: DeviceType,
     pub current_sensitivity: usize,
     pub sensitivities: Vec<u8>,
+    /// Per-sensitivity saturation limits (pC), parallel to `sensitivities`. Empty when
+    /// the device has no saturation checking.
+    #[serde(default)]
+    pub saturation_charges: Vec<f64>,
     pub stats: Stats,
     pub connected: bool,
     #[serde(default)]
@@ -54,6 +58,10 @@ pub struct DeviceStatus {
     /// re-applying the sensitivity.
     #[serde(default)]
     pub calibration_mismatch: bool,
+    /// True when the configured peak window does not bracket the actual peak in the
+    /// digitizer signal (checked on boot and when the window PVs change).
+    #[serde(default)]
+    pub peak_misaligned: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -97,6 +105,9 @@ pub enum ServerMessage {
         /// button. `None` when no reset is running.
         #[serde(default)]
         reset_progress: Option<(u32, u32)>,
+        /// Whether automatic gain switching on saturation is enabled.
+        #[serde(default)]
+        auto_gain: bool,
     },
     /// Full chart snapshot: replace the client's buffers wholesale. Sent per-client
     /// on connect and broadcast after a buffer clear/resize.
@@ -115,6 +126,10 @@ pub enum ServerMessage {
     BufferSizeChanged { size: usize },
     /// Device order changed
     DeviceOrderChanged { order: Vec<String> },
+    /// Automatic gain switching toggled
+    AutoGainChanged { enabled: bool },
+    /// A device's peak-window alignment check result changed
+    PeakAlignment { device: String, misaligned: bool },
     /// Countdown during a front-end reset. `remaining_secs == 0` means the wait is over.
     ResetProgress {
         remaining_secs: u32,
@@ -147,6 +162,10 @@ pub enum ClientMessage {
     ResetFrontEnds,
     SetBufferSize {
         size: usize,
+    },
+    /// Enable/disable automatic gain switching on saturation.
+    SetAutoGain {
+        enabled: bool,
     },
     SetDeviceOrder {
         order: Vec<String>,
@@ -209,16 +228,19 @@ mod tests {
                 device_type: DeviceType::Wcm,
                 current_sensitivity: 0,
                 sensitivities: vec![3, 4],
+                saturation_charges: vec![150.0, 300.0],
                 stats: Stats::default(),
                 connected: true,
                 fe_alive: true,
                 last_data_time: 1234567890.0,
                 defaults: HashMap::new(),
                 calibration_mismatch: true,
+                peak_misaligned: true,
             }],
             buffer_size: 1000,
             device_order: vec!["TEST-DEV".to_string()],
             reset_progress: Some((42, 65)),
+            auto_gain: true,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let decoded: ServerMessage = serde_json::from_str(&json).unwrap();
@@ -227,15 +249,18 @@ mod tests {
             buffer_size,
             device_order,
             reset_progress,
+            auto_gain,
         } = decoded
         {
             assert_eq!(devices.len(), 1);
             assert_eq!(devices[0].name, "TEST-DEV");
             assert_eq!(devices[0].last_data_time, 1234567890.0);
             assert!(devices[0].calibration_mismatch);
+            assert_eq!(devices[0].saturation_charges, vec![150.0, 300.0]);
             assert_eq!(buffer_size, 1000);
             assert_eq!(device_order, vec!["TEST-DEV"]);
             assert_eq!(reset_progress, Some((42, 65)));
+            assert!(auto_gain);
         } else {
             panic!("Expected Init message");
         }

@@ -12,6 +12,10 @@ pub struct DeviceConfig {
     pub ip: String,
     #[serde(default)]
     pub sensitivities: Vec<u8>,
+    /// Per-sensitivity saturation limits (pC), parallel to `sensitivities`. Empty means
+    /// no saturation checking for this device (DQ, ICT).
+    #[serde(default)]
+    pub saturation_charges: Vec<f64>,
     pub pvs: HashMap<String, String>,
     pub defaults: HashMap<String, DefaultValue>,
 }

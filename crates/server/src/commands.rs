@@ -86,6 +86,20 @@ pub async fn handle_command(
             handle_set_buffer_size(size, state, broadcaster).await;
             Ok(())
         }
+        ClientMessage::SetAutoGain { enabled } => {
+            state.write().await.auto_gain = enabled;
+            send_message(broadcaster, &ServerMessage::AutoGainChanged { enabled });
+            broadcast_notification(
+                broadcaster,
+                NotificationLevel::Info,
+                format!(
+                    "Automatic gain switching {}",
+                    if enabled { "enabled" } else { "disabled" }
+                ),
+                None,
+            );
+            Ok(())
+        }
         ClientMessage::SetDeviceOrder { order } => {
             handle_set_device_order(order, state, broadcaster).await;
             Ok(())
@@ -370,7 +384,7 @@ struct SweepConfig {
 /// Mean peak-sample index across a set of waveforms. `find_max` selects argmax
 /// (WCM/DQ, positive-going) vs argmin (FCUP, negative-going). Empty waveforms are
 /// skipped; returns None if there is no usable data.
-fn mean_peak_index(waveforms: &[Vec<f64>], find_max: bool) -> Option<f64> {
+pub(crate) fn mean_peak_index(waveforms: &[Vec<f64>], find_max: bool) -> Option<f64> {
     let mut sum = 0.0;
     let mut n = 0usize;
     for wf in waveforms {
@@ -749,6 +763,78 @@ async fn reset_front_ends(state: &AppState, broadcaster: &Broadcaster) -> Result
         None,
     );
     Ok(())
+}
+
+/// How often the auto-gain watcher checks for saturation.
+const AUTO_GAIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+/// Samples averaged for the saturation decision (~1s at the 10 Hz rep rate). A short
+/// window means the decision reflects post-switch data quickly, unlike the full-buffer
+/// mean shown in the UI, which can lag by minutes.
+const AUTO_GAIN_WINDOW: usize = 10;
+/// Minimum wait between auto gain switches for one device, so the decision window is
+/// fully refreshed with post-switch samples before deciding again.
+const AUTO_GAIN_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Spawn the auto-gain watcher: while enabled, any connected device whose recent
+/// rolling average exceeds its current sensitivity's saturation limit is switched to
+/// the next (less sensitive) level via the normal sensitivity path, with a warning
+/// notification. Devices without `saturation_charges` (DQ, ICT) or already at the
+/// least sensitive level are left alone.
+pub fn spawn_auto_gain(state: AppState, broadcaster: Broadcaster) {
+    tokio::spawn(async move {
+        let mut last_switch: std::collections::HashMap<String, std::time::Instant> =
+            std::collections::HashMap::new();
+        let mut interval = tokio::time::interval(AUTO_GAIN_INTERVAL);
+        loop {
+            interval.tick().await;
+            // (name, next index, mean, limit) for every saturating device.
+            let candidates: Vec<(String, usize, f64, f64)> = {
+                let s = state.read().await;
+                if !s.auto_gain {
+                    continue;
+                }
+                s.devices
+                    .iter()
+                    .filter_map(|d| {
+                        if !d.connected {
+                            return None;
+                        }
+                        let limit = *d.config.saturation_charges.get(d.current_sensitivity)?;
+                        if d.current_sensitivity + 1 >= d.config.sensitivities.len() {
+                            return None; // already at the least sensitive level
+                        }
+                        let mean = d.buffer.mean_of_last(AUTO_GAIN_WINDOW)?;
+                        // FCUP pulses are negative-going, so compare magnitudes.
+                        (mean.abs() > limit)
+                            .then(|| (d.name.clone(), d.current_sensitivity + 1, mean, limit))
+                    })
+                    .collect()
+            };
+            for (name, next_index, mean, limit) in candidates {
+                if last_switch
+                    .get(&name)
+                    .is_some_and(|t| t.elapsed() < AUTO_GAIN_COOLDOWN)
+                {
+                    continue;
+                }
+                last_switch.insert(name.clone(), std::time::Instant::now());
+                broadcast_notification(
+                    &broadcaster,
+                    NotificationLevel::Warning,
+                    format!(
+                        "Auto gain: {name} saturating (avg {mean:.2} pC, limit {limit} pC) — \
+                         switching to a less sensitive level"
+                    ),
+                    Some(name.clone()),
+                );
+                if let Err(e) =
+                    handle_set_sensitivity(&name, next_index, &state, &broadcaster).await
+                {
+                    notify_error(&broadcaster, e.message, e.device);
+                }
+            }
+        }
+    });
 }
 
 async fn handle_set_buffer_size(size: usize, state: &AppState, broadcaster: &Broadcaster) {
