@@ -419,6 +419,17 @@ impl eframe::App for ChargeOverviewApp {
                     status_color(self.connected),
                     format!("{} {status}", glyph::STATUS_DOT),
                 );
+                ui.separator();
+                egui::Frame::NONE
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .inner_margin(egui::Margin::symmetric(5, 2))
+                    .corner_radius(3u8)
+                    .show(ui, |ui: &mut egui::Ui| {
+                        ui.hyperlink_to(
+                            "Docs",
+                            "https://projects.astec.ac.uk/CLARAManual/index.php/Charge",
+                        );
+                    });
             });
             controls::draw_global_controls(
                 ui,
