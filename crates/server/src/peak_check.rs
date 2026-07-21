@@ -107,46 +107,6 @@ fn peak_is_significant(waveforms: &[Vec<f64>], find_max: bool) -> bool {
     sigma > 0.0 && (extreme - median).abs() > MIN_PEAK_SIGNIFICANCE * sigma
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Deterministic pseudo-noise around zero, amplitude ±0.5.
-    fn noise(len: usize, seed: usize) -> Vec<f64> {
-        (0..len)
-            .map(|i| (((i * 31 + seed * 17) % 100) as f64 / 100.0) - 0.5)
-            .collect()
-    }
-
-    #[test]
-    fn noise_only_is_not_significant() {
-        let waveforms: Vec<Vec<f64>> = (0..10).map(|s| noise(500, s)).collect();
-        assert!(!peak_is_significant(&waveforms, true));
-        assert!(!peak_is_significant(&waveforms, false));
-    }
-
-    #[test]
-    fn real_pulse_is_significant_flat_trace_is_not() {
-        let waveforms: Vec<Vec<f64>> = (0..10)
-            .map(|s| {
-                let mut w = noise(500, s);
-                w[250] = 50.0; // positive-going pulse well above the noise
-                w
-            })
-            .collect();
-        assert!(peak_is_significant(&waveforms, true));
-
-        let inverted: Vec<Vec<f64>> = waveforms
-            .iter()
-            .map(|w| w.iter().map(|x| -x).collect())
-            .collect();
-        assert!(peak_is_significant(&inverted, false));
-
-        assert!(!peak_is_significant(&[vec![0.0; 500]], true));
-        assert!(!peak_is_significant(&[], true));
-    }
-}
-
 /// Poll the window PVs; on the first read (boot) and on any change, locate the actual
 /// peak and reconcile the device's `peak_misaligned` flag. Failures just retry on the
 /// next poll, so a device that is down produces a warning log, not a task death.
@@ -233,5 +193,45 @@ async fn peak_check_loop(state: AppState, broadcaster: Broadcaster, t: Target) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic pseudo-noise around zero, amplitude ±0.5.
+    fn noise(len: usize, seed: usize) -> Vec<f64> {
+        (0..len)
+            .map(|i| (((i * 31 + seed * 17) % 100) as f64 / 100.0) - 0.5)
+            .collect()
+    }
+
+    #[test]
+    fn noise_only_is_not_significant() {
+        let waveforms: Vec<Vec<f64>> = (0..10).map(|s| noise(500, s)).collect();
+        assert!(!peak_is_significant(&waveforms, true));
+        assert!(!peak_is_significant(&waveforms, false));
+    }
+
+    #[test]
+    fn real_pulse_is_significant_flat_trace_is_not() {
+        let waveforms: Vec<Vec<f64>> = (0..10)
+            .map(|s| {
+                let mut w = noise(500, s);
+                w[250] = 50.0; // positive-going pulse well above the noise
+                w
+            })
+            .collect();
+        assert!(peak_is_significant(&waveforms, true));
+
+        let inverted: Vec<Vec<f64>> = waveforms
+            .iter()
+            .map(|w| w.iter().map(|x| -x).collect())
+            .collect();
+        assert!(peak_is_significant(&inverted, false));
+
+        assert!(!peak_is_significant(&[vec![0.0; 500]], true));
+        assert!(!peak_is_significant(&[], true));
     }
 }
