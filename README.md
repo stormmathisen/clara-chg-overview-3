@@ -152,7 +152,7 @@ docker run -p 49195:49195 \
 - **Sensitivity selection** dynamically from config (supports any FB level)
 - **Saturation warning** (⚠ SATURATING) per chart when the rolling average exceeds the configured limit
 - **Auto gain** toggle to switch saturating WCM/FCUP devices to a less sensitive level automatically
-- **Peak-window check** (⚠ PEAK MISALIGNED) when the sample window misses the digitizer peak
+- **Peak-window check** (⚠ CHECK TIMING) when the sample window misses the digitizer peak
 - **Buffer size** control to adjust rolling window length
 - **Notifications** for command results and errors (auto-dismiss after 10s, errors persist)
 - **Audit logging** of all client connections and commands (JSON-lines format)

@@ -81,7 +81,7 @@ Three crates (`crates/`):
   `peak_low`/`peak_high` PVs every 30 s (via `epics::caget`); on boot and on any change
   it averages 10 digitizer waveforms (argmax WCM / argmin FCUP, same as sweep timing)
   and reconciles `peak_misaligned` (in `DeviceStatus`, pushed via `PeakAlignment` +
-  warning notification). A trace with no significant pulse (beam off — peak < 7
+  warning notification). A trace with no significant pulse (beam off — peak < 25
   robust-σ above the baseline) is not judged; the check retries each poll.
 - **Watchdog:** marks a device disconnected after `WATCHDOG_STALE_SECS` (60s) with no data.
 - **Front-end ping:** every 30s, TCP-connects to each device `ip:56000` to set `fe_alive`.

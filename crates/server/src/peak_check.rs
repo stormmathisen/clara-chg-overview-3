@@ -28,7 +28,12 @@ const CHECK_WAVEFORMS: usize = 10;
 const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 /// Minimum peak prominence, in robust-σ units of the averaged waveform's noise,
 /// for the located peak to be trusted as a real pulse rather than noise.
-const MIN_PEAK_SIGNIFICANCE: f64 = 7.0;
+const MIN_PEAK_SIGNIFICANCE: f64 = 25.0;
+/// Minimum ~1s rolling charge magnitude (pC) for the window to be judged at all.
+/// Below this there is no real beam, so any located peak is noise — don't warn.
+const MIN_PEAK_CHARGE_PC: f64 = 5.0;
+/// Rolling samples (~1s at 10 Hz) averaged for the charge gate.
+const CHARGE_WINDOW: usize = 10;
 
 /// One device's checkable peak window.
 struct Target {
@@ -182,7 +187,15 @@ async fn peak_check_loop(state: AppState, broadcaster: Broadcaster, t: Target) {
         // With no beam the argmax/argmin is just noise and would judge alignment
         // spuriously. Don't record the window as checked: retry each poll until a
         // real pulse shows up. The previous verdict, if any, stands meanwhile.
-        if !peak_is_significant(&waveforms, t.find_max) {
+        // Gate on actual charge (real beam is >5 pC) as well as waveform prominence.
+        let charge_mag = {
+            let s = state.read().await;
+            s.devices
+                .get(t.index)
+                .and_then(|d| d.buffer.mean_of_last(CHARGE_WINDOW))
+                .map_or(0.0, f64::abs)
+        };
+        if charge_mag < MIN_PEAK_CHARGE_PC || !peak_is_significant(&waveforms, t.find_max) {
             continue;
         }
         last_checked = Some((low, high));
@@ -211,8 +224,9 @@ async fn peak_check_loop(state: AppState, broadcaster: Broadcaster, t: Target) {
                     &broadcaster,
                     NotificationLevel::Warning,
                     format!(
-                        "Peak window misaligned for {}: digitizer peak at sample {peak:.1}, \
-                         window [{low:.0}, {high:.0}] — run Sweep Timing",
+                        "Check timing for {}: digitizer peak at sample {peak:.1}, outside the \
+                         peak window [{low:.0}, {high:.0}] — check in Phoebus that the peak \
+                         falls between the window lines",
                         t.name
                     ),
                     Some(t.name.clone()),

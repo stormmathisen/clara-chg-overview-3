@@ -38,10 +38,10 @@ pub fn draw_strip_chart(
             }
         }
         if peak_misaligned {
-            ui.colored_label(egui::Color32::YELLOW, "⚠ PEAK MISALIGNED")
+            ui.colored_label(egui::Color32::YELLOW, "⚠ CHECK TIMING")
                 .on_hover_text(
-                    "The configured peak window does not bracket the actual peak in the \
-                     digitizer signal — run Sweep Timing for this device",
+                    "Check the timing for this device: in Phoebus, confirm the peak in the \
+                     digitizer trace falls between the peak window lines",
                 );
         }
     });

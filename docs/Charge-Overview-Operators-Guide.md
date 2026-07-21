@@ -122,13 +122,14 @@ Two yellow warnings can appear next to the stats line:
 > longer be trusted: move to a higher FB level, or tick **Auto gain** in the top
 > bar and let the app do it.
 
-> **⚠ PEAK MISALIGNED** — the app checks (at startup, and whenever the sample
+> **⚠ CHECK TIMING** — the app checks (at startup, and whenever the sample
 > window PVs change) that the configured peak window actually brackets the pulse
 > in the digitizer trace — the negative-going dip for an FCUP, the positive peak
 > for the WCM. The check only judges a trace with a clear pulse in it (with beam
 > off there is only noise, so it waits and retries). If the window misses the
-> pulse, charge is being integrated in the wrong place: run **Sweep Timing** for
-> that device.
+> pulse, charge is being integrated in the wrong place: open the device's trace
+> in Phoebus and confirm the peak falls between the peak window lines, then run
+> **Sweep Timing** if it doesn't.
 
 ---
 
@@ -368,7 +369,7 @@ and yours survives a reload.
 | **FE** red | Front-end box in the bunker unreachable | Check box power and network |
 | Sensitivity row orange | Gain changed outside this app; calibration may be stale | Click the selected level to re-apply |
 | **⚠ SATURATING** on a chart | Rolling average past the limit for the current sensitivity | Pick a higher FB level, or tick **Auto gain** |
-| **⚠ PEAK MISALIGNED** on a chart | Sample window doesn't bracket the digitizer peak | Get beam on the device and run **Sweep Timing** |
+| **⚠ CHECK TIMING** on a chart | Sample window doesn't bracket the digitizer peak | Check in Phoebus that the peak sits between the window lines; if not, get beam on the device and run **Sweep Timing** |
 | Chart flat at zero | No beam, or the device isn't reading | Check the **E** dot and `Last:` time |
 | Red error in the bar | A command failed | Expand the history and read it |
 | Stats frozen unexpectedly | Freeze Stats is on | Click **Unfreeze Stats** |
