@@ -1,0 +1,237 @@
+//! Peak-window alignment checker.
+//!
+//! On boot, and whenever a device's `peak_low`/`peak_high` PVs change, verify that
+//! the configured window actually brackets the peak in the digitizer signal
+//! (positive-going for WCM, negative-going for FCUP). A misaligned window means the
+//! charge integration is sampling the wrong part of the waveform, so the flag is
+//! pushed to every client and a warning notification names the fix (Sweep Timing).
+
+use std::time::Duration;
+
+use shared::messages::{DeviceType, NotificationLevel, ServerMessage};
+use tracing::warn;
+
+use crate::commands::{keys, mean_peak_index};
+use crate::epics;
+use crate::state::AppState;
+use crate::ws::{broadcast_notification, send_message, Broadcaster};
+
+// ponytail: window PVs are polled at 30s rather than live CA subscriptions — good
+// enough for "on boot and when the window moves"; subscribe like `persistent_monitor`
+// if change latency ever matters.
+const POLL_INTERVAL: Duration = Duration::from_secs(30);
+/// Timeout for reading one window PV.
+const CAGET_TIMEOUT: Duration = Duration::from_secs(5);
+/// Waveforms averaged to locate the actual peak (~1s at the 10 Hz rep rate).
+const CHECK_WAVEFORMS: usize = 10;
+/// Bound on collecting those waveforms.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+/// Minimum peak prominence, in robust-σ units of the averaged waveform's noise,
+/// for the located peak to be trusted as a real pulse rather than noise.
+const MIN_PEAK_SIGNIFICANCE: f64 = 25.0;
+/// Minimum ~1s rolling charge magnitude (pC) for the window to be judged at all.
+/// Below this there is no real beam, so any located peak is noise — don't warn.
+const MIN_PEAK_CHARGE_PC: f64 = 5.0;
+/// Rolling samples (~1s at 10 Hz) averaged for the charge gate.
+const CHARGE_WINDOW: usize = 10;
+
+/// One device's checkable peak window.
+struct Target {
+    index: usize,
+    name: String,
+    digitizer: String,
+    low_pv: String,
+    high_pv: String,
+    /// argmax (WCM, positive-going) vs argmin (FCUP, negative-going).
+    find_max: bool,
+}
+
+/// Spawn one alignment-check loop per WCM/FCUP device with peak-window PVs.
+pub fn spawn_peak_checkers(state: AppState, broadcaster: Broadcaster) {
+    tokio::spawn(async move {
+        let targets: Vec<Target> = {
+            let s = state.read().await;
+            s.devices
+                .iter()
+                .enumerate()
+                .filter_map(|(index, d)| {
+                    // Only WCM and FCUP have a single beam peak to check; DQ's dark
+                    // charge and ICTs have no meaningful digitizer peak window.
+                    let find_max = match d.config.device_type {
+                        DeviceType::Wcm => true,
+                        DeviceType::Fcup => false,
+                        _ => return None,
+                    };
+                    Some(Target {
+                        index,
+                        name: d.name.clone(),
+                        digitizer: d.config.digitizer.clone(),
+                        low_pv: d.config.pvs.get(keys::PEAK_LOW)?.clone(),
+                        high_pv: d.config.pvs.get(keys::PEAK_HIGH)?.clone(),
+                        find_max,
+                    })
+                })
+                .collect()
+        };
+        for target in targets {
+            tokio::spawn(peak_check_loop(state.clone(), broadcaster.clone(), target));
+        }
+    });
+}
+
+/// True when the extreme of the sample-wise mean waveform stands out from the
+/// baseline: |extreme − median| > MIN_PEAK_SIGNIFICANCE × robust σ (MAD·1.4826).
+/// Median/MAD are used so the pulse itself doesn't inflate the noise estimate; a
+/// flat or empty trace (σ = 0) is never significant.
+fn peak_is_significant(waveforms: &[Vec<f64>], find_max: bool) -> bool {
+    let len = waveforms.iter().map(Vec::len).min().unwrap_or(0);
+    if len == 0 {
+        return false;
+    }
+    let mean: Vec<f64> = (0..len)
+        .map(|i| waveforms.iter().map(|w| w[i]).sum::<f64>() / waveforms.len() as f64)
+        .collect();
+
+    let median_of = |v: &mut Vec<f64>| -> f64 {
+        v.sort_unstable_by(|a, b| a.total_cmp(b));
+        v[v.len() / 2]
+    };
+    let median = median_of(&mut mean.clone());
+    let sigma = 1.4826 * median_of(&mut mean.iter().map(|x| (x - median).abs()).collect());
+
+    let extreme = mean
+        .iter()
+        .copied()
+        .reduce(|a, b| if (b > a) == find_max { b } else { a })
+        .unwrap_or(median);
+    sigma > 0.0 && (extreme - median).abs() > MIN_PEAK_SIGNIFICANCE * sigma
+}
+
+/// Poll the window PVs; on the first read (boot) and on any change, locate the actual
+/// peak and reconcile the device's `peak_misaligned` flag. Failures just retry on the
+/// next poll, so a device that is down produces a warning log, not a task death.
+async fn peak_check_loop(state: AppState, broadcaster: Broadcaster, t: Target) {
+    let mut last_checked: Option<(f64, f64)> = None;
+    let mut interval = tokio::time::interval(POLL_INTERVAL);
+    loop {
+        interval.tick().await;
+
+        let window = tokio::try_join!(
+            epics::caget(&t.low_pv, CAGET_TIMEOUT),
+            epics::caget(&t.high_pv, CAGET_TIMEOUT)
+        );
+        let (low, high) = match window {
+            Ok(w) => w,
+            Err(e) => {
+                warn!("[{}] peak check: {e}", t.name);
+                continue;
+            }
+        };
+        if last_checked == Some((low, high)) {
+            continue;
+        }
+
+        let read_pv = format!("{}-READ", t.digitizer);
+        let waveforms =
+            match epics::collect_waveforms(&read_pv, CHECK_WAVEFORMS, CHECK_TIMEOUT).await {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("[{}] peak check: {e}", t.name);
+                    continue;
+                }
+            };
+        let Some(peak) = mean_peak_index(&waveforms, t.find_max) else {
+            warn!("[{}] peak check: no usable waveform data", t.name);
+            continue;
+        };
+        // With no beam the argmax/argmin is just noise and would judge alignment
+        // spuriously. Don't record the window as checked: retry each poll until a
+        // real pulse shows up. The previous verdict, if any, stands meanwhile.
+        // Gate on actual charge (real beam is >5 pC) as well as waveform prominence.
+        let charge_mag = {
+            let s = state.read().await;
+            s.devices
+                .get(t.index)
+                .and_then(|d| d.buffer.mean_of_last(CHARGE_WINDOW))
+                .map_or(0.0, f64::abs)
+        };
+        if charge_mag < MIN_PEAK_CHARGE_PC || !peak_is_significant(&waveforms, t.find_max) {
+            continue;
+        }
+        last_checked = Some((low, high));
+
+        let misaligned = peak < low || peak > high;
+        let changed = {
+            let mut s = state.write().await;
+            match s.devices.get_mut(t.index) {
+                Some(d) if d.peak_misaligned != misaligned => {
+                    d.peak_misaligned = misaligned;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if changed {
+            send_message(
+                &broadcaster,
+                &ServerMessage::PeakAlignment {
+                    device: t.name.clone(),
+                    misaligned,
+                },
+            );
+            if misaligned {
+                broadcast_notification(
+                    &broadcaster,
+                    NotificationLevel::Warning,
+                    format!(
+                        "Check timing for {}: digitizer peak at sample {peak:.1}, outside the \
+                         peak window [{low:.0}, {high:.0}] — check in Phoebus that the peak \
+                         falls between the window lines",
+                        t.name
+                    ),
+                    Some(t.name.clone()),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic pseudo-noise around zero, amplitude ±0.5.
+    fn noise(len: usize, seed: usize) -> Vec<f64> {
+        (0..len)
+            .map(|i| (((i * 31 + seed * 17) % 100) as f64 / 100.0) - 0.5)
+            .collect()
+    }
+
+    #[test]
+    fn noise_only_is_not_significant() {
+        let waveforms: Vec<Vec<f64>> = (0..10).map(|s| noise(500, s)).collect();
+        assert!(!peak_is_significant(&waveforms, true));
+        assert!(!peak_is_significant(&waveforms, false));
+    }
+
+    #[test]
+    fn real_pulse_is_significant_flat_trace_is_not() {
+        let waveforms: Vec<Vec<f64>> = (0..10)
+            .map(|s| {
+                let mut w = noise(500, s);
+                w[250] = 50.0; // positive-going pulse well above the noise
+                w
+            })
+            .collect();
+        assert!(peak_is_significant(&waveforms, true));
+
+        let inverted: Vec<Vec<f64>> = waveforms
+            .iter()
+            .map(|w| w.iter().map(|x| -x).collect())
+            .collect();
+        assert!(peak_is_significant(&inverted, false));
+
+        assert!(!peak_is_significant(&[vec![0.0; 500]], true));
+        assert!(!peak_is_significant(&[], true));
+    }
+}

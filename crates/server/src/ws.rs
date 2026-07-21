@@ -79,12 +79,14 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
                 device_type: d.config.device_type.clone(),
                 current_sensitivity: d.current_sensitivity,
                 sensitivities: d.config.sensitivities.clone(),
+                saturation_charges: d.config.saturation_charges.clone(),
                 stats: d.buffer.statistics(),
                 connected: d.connected,
                 fe_alive: d.fe_alive,
                 last_data_time: d.last_data_time,
                 defaults,
                 calibration_mismatch: d.calibration_mismatch,
+                peak_misaligned: d.peak_misaligned,
             }
         })
         .collect();
@@ -93,6 +95,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
         buffer_size: state.buffer_size,
         device_order: state.device_order.clone(),
         reset_progress: state.reset_progress,
+        auto_gain: state.auto_gain,
     }
 }
 

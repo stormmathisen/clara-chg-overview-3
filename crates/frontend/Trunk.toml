@@ -1,3 +1,5 @@
 [build]
 target = "index.html"
 dist = "../../frontend_dist"
+# Size-optimised profile from the workspace Cargo.toml (fat LTO, opt-level "s").
+cargo_profile = "wasm-release"

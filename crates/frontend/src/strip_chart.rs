@@ -11,6 +11,8 @@ pub fn draw_strip_chart(
     height: f32,
     stats_override: Option<&Stats>,
     y_scale: &YAxisScale,
+    saturation_limit: Option<f64>,
+    peak_misaligned: bool,
 ) {
     let stats = stats_override.unwrap_or(&chart.stats);
     let frozen = stats_override.is_some();
@@ -23,6 +25,25 @@ pub fn draw_strip_chart(
         }
         ui.separator();
         stats_label(ui, stats);
+        // Live-stats mean is what the operator sees; magnitude comparison because FCUP
+        // pulses are negative-going.
+        if let Some(limit) = saturation_limit {
+            if chart.stats.mean.abs() > limit {
+                ui.colored_label(egui::Color32::YELLOW, "⚠ SATURATING")
+                    .on_hover_text(format!(
+                        "Rolling average exceeds the {limit} pC saturation limit for the \
+                         current sensitivity — select a less sensitive level (or enable \
+                         auto gain)"
+                    ));
+            }
+        }
+        if peak_misaligned {
+            ui.colored_label(egui::Color32::YELLOW, "⚠ CHECK TIMING")
+                .on_hover_text(
+                    "Check the timing for this device: in Phoebus, confirm the peak in the \
+                     digitizer trace falls between the peak window lines",
+                );
+        }
     });
 
     // The rolling buffer is a (non-contiguous) VecDeque, so materialise the points

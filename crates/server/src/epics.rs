@@ -197,6 +197,28 @@ pub async fn collect_waveforms(
         .map_err(|_| anyhow::anyhow!("timed out collecting {count} waveforms from {pv_name}"))?
 }
 
+/// Read a PV's current value by subscribing and taking the first numeric monitor
+/// event (CA sends the current value on subscribe) — the poor man's caget. Builds a
+/// throwaway client, so this is for occasional polls, not hot paths.
+pub async fn caget(pv_name: &str, timeout: Duration) -> anyhow::Result<f64> {
+    let get = async {
+        let mut client = Client::new().await?;
+        let (mut monitor, _token) = client.subscribe(pv_name).await?;
+        loop {
+            let dbr = monitor
+                .recv()
+                .await
+                .map_err(|e| anyhow::anyhow!("monitor recv error for {pv_name}: {e}"))?;
+            if let Some(v) = extract_f64(dbr.value()) {
+                return Ok(v);
+            }
+        }
+    };
+    tokio::time::timeout(timeout, get)
+        .await
+        .map_err(|_| anyhow::anyhow!("timed out reading {pv_name}"))?
+}
+
 /// Shared Channel Access client used for all PV writes.
 ///
 /// Constructing a `Client` is expensive — measured at ~83 ms, dominated by CA startup,

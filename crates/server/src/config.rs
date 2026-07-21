@@ -20,6 +20,16 @@ pub fn load_device_configs(path: &Path) -> anyhow::Result<HashMap<String, Device
             config.pvs.contains_key("charge"),
             "Device {name}: missing required 'charge' PV"
         );
+        // Saturation limits are indexed by the current sensitivity, so a non-empty
+        // array must match `sensitivities` (empty disables saturation checking).
+        if !config.saturation_charges.is_empty() {
+            anyhow::ensure!(
+                config.saturation_charges.len() == config.sensitivities.len(),
+                "Device {name}: saturation_charges has {} values but there are {} sensitivities",
+                config.saturation_charges.len(),
+                config.sensitivities.len()
+            );
+        }
         // Per-sensitivity default arrays are indexed by the current sensitivity, so
         // their length must match `sensitivities`. A mismatch would otherwise be
         // masked at runtime by `DefaultValue::for_sensitivity`'s last-element fallback.
@@ -111,6 +121,24 @@ test-device:
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("sensitivities"));
+    }
+
+    #[test]
+    fn saturation_charges_length_mismatch_rejected() {
+        let yaml = r#"
+test-device:
+  type: fcup
+  digitizer: "DIG01"
+  ip: "192.168.1.1"
+  sensitivities: [0, 1, 2]
+  saturation_charges: [10, 20]
+  pvs:
+    charge: "TEST:CHARGE"
+  defaults: {}
+"#;
+        let (_dir, path) = write_temp_yaml(yaml);
+        let err = load_device_configs(&path).unwrap_err().to_string();
+        assert!(err.contains("saturation_charges"), "{err}");
     }
 
     #[test]

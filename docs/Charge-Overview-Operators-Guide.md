@@ -115,6 +115,22 @@ The stats are computed over the **rolling buffer**, so they follow the Buffer
 setting. A buffer of 1000 points at 10 Hz is roughly the last 100 seconds — halve
 the buffer and the mean responds twice as fast to a change.
 
+Two yellow warnings can appear next to the stats line:
+
+> **⚠ SATURATING** — the rolling average is past the saturation limit for the
+> device's current sensitivity. The sensor is clipping and the numbers can no
+> longer be trusted: move to a higher FB level, or tick **Auto gain** in the top
+> bar and let the app do it.
+
+> **⚠ CHECK TIMING** — the app checks (at startup, and whenever the sample
+> window PVs change) that the configured peak window actually brackets the pulse
+> in the digitizer trace — the negative-going dip for an FCUP, the positive peak
+> for the WCM. The check only judges a trace with a clear pulse in it (with beam
+> off there is only noise, so it waits and retries). If the window misses the
+> pulse, charge is being integrated in the wrong place: open the device's trace
+> in Phoebus and confirm the peak falls between the peak window lines, then run
+> **Sweep Timing** if it doesn't.
+
 ---
 
 ## Per-device controls
@@ -158,7 +174,8 @@ the front panel) moves the gain but *not* the calibration, and the readings go
 quietly wrong.
 
 Lower FB = more sensitive. Use a low FB for small charge, go up to a higher FB if
-the signal saturates.
+the signal saturates — the chart shows a yellow **⚠ SATURATING** when the rolling
+average is past the limit for the current level.
 
 > **The orange warning.** If someone changes a sensitivity outside this app, the
 > row turns orange and the active level goes solid orange:
@@ -259,6 +276,18 @@ to apply — a value that isn't a number snaps back.
 This is **shared**: it changes the buffer for everyone, and resizing discards
 points, so expect the charts to jump.
 
+### Auto gain
+
+When ticked, any WCM or FCUP whose recent rolling average (roughly the last
+second of data) exceeds the saturation limit for its current level is switched
+to the next less sensitive FB level automatically — exactly as if you had
+clicked the button, calibration factors and all. Each switch announces itself
+with an orange warning notification naming the device. A device already at its
+least sensitive level is left alone and just keeps showing **⚠ SATURATING**.
+
+Off by default. This is **shared** — it turns auto gain on for everyone — and
+the server remembers it across restarts.
+
 ### Freeze Stats
 
 Snapshots the Mean/Min/Max/RMSD as they stand so you can write them down while
@@ -306,8 +335,9 @@ appear in your bar.
 
 **Read charge on a Faraday cup**
 Insert the cup. Confirm **E** and **FE** are green. Pick an FB level that doesn't
-saturate — start low, go up if the trace clips. Let the buffer fill, then read the
-stats or hit **Freeze Stats** to write them down.
+saturate — start low, go up if **⚠ SATURATING** appears (or tick **Auto gain**
+and let the app step up for you). Let the buffer fill, then read the stats or hit
+**Freeze Stats** to write them down.
 
 **Zero the WCM**
 Beam off, RF on. Click **Zero WCM**, wait ~10 s for the "Zeroed … offset = x"
@@ -338,6 +368,8 @@ and yours survives a reload.
 | **E** red on one device | No EPICS data for 60 s — digitizer in the rack room | Check the digitizer and its IOC |
 | **FE** red | Front-end box in the bunker unreachable | Check box power and network |
 | Sensitivity row orange | Gain changed outside this app; calibration may be stale | Click the selected level to re-apply |
+| **⚠ SATURATING** on a chart | Rolling average past the limit for the current sensitivity | Pick a higher FB level, or tick **Auto gain** |
+| **⚠ CHECK TIMING** on a chart | Sample window doesn't bracket the digitizer peak | Check in Phoebus that the peak sits between the window lines; if not, get beam on the device and run **Sweep Timing** |
 | Chart flat at zero | No beam, or the device isn't reading | Check the **E** dot and `Last:` time |
 | Red error in the bar | A command failed | Expand the history and read it |
 | Stats frozen unexpectedly | Freeze Stats is on | Click **Unfreeze Stats** |
@@ -347,9 +379,9 @@ and yours survives a reload.
 
 ## Notes
 
-- **Shared vs. local.** Buffer size, sensitivities and every hardware command are
-  shared with everyone. Device order, filters, Y-axis and Freeze Stats are yours
-  alone, kept in your browser.
+- **Shared vs. local.** Buffer size, sensitivities, Auto gain and every hardware
+  command are shared with everyone. Device order, filters, Y-axis and Freeze
+  Stats are yours alone, kept in your browser.
 - **Everything is logged.** Connections and commands go to an append-only audit
   log. If something moved and nobody remembers doing it, ask a controls engineer
   to check.

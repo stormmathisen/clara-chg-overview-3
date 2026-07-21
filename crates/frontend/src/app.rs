@@ -179,6 +179,8 @@ pub struct ChargeOverviewApp {
     pub device_order: Vec<String>,
     pub frozen_stats: Option<Vec<(String, Stats)>>,
     pub y_axis: YAxisState,
+    /// Server-side automatic gain switching flag, mirrored from Init/AutoGainChanged.
+    pub auto_gain: bool,
 }
 
 impl ChargeOverviewApp {
@@ -225,6 +227,7 @@ impl ChargeOverviewApp {
             device_order,
             frozen_stats: None,
             y_axis,
+            auto_gain: false,
         }
     }
 
@@ -240,6 +243,7 @@ impl ChargeOverviewApp {
                     buffer_size,
                     device_order: _, // ignored: order is per-browser, kept in local storage
                     reset_progress,
+                    auto_gain,
                 } => {
                     // Keep our own order (persisted / from this session) for devices that still
                     // exist; slot any others in sorted by type then name.
@@ -256,6 +260,7 @@ impl ChargeOverviewApp {
                     // Adopt the server's live countdown so a window connecting mid-reset
                     // matches the others immediately (None when no reset is running).
                     self.reset_progress = reset_progress;
+                    self.auto_gain = auto_gain;
                 }
                 ServerMessage::ChartData { snapshots } => {
                     let cap = self.buffer.size;
@@ -292,6 +297,14 @@ impl ChargeOverviewApp {
                 }
                 ServerMessage::DeviceOrderChanged { .. } => {
                     // Order is persisted per-browser now; ignore other clients' reorders.
+                }
+                ServerMessage::AutoGainChanged { enabled } => {
+                    self.auto_gain = enabled;
+                }
+                ServerMessage::PeakAlignment { device, misaligned } => {
+                    if let Some(dev) = self.devices.iter_mut().find(|d| d.name == device) {
+                        dev.peak_misaligned = misaligned;
+                    }
                 }
                 ServerMessage::ResetProgress {
                     remaining_secs,
@@ -406,6 +419,17 @@ impl eframe::App for ChargeOverviewApp {
                     status_color(self.connected),
                     format!("{} {status}", glyph::STATUS_DOT),
                 );
+                ui.separator();
+                egui::Frame::NONE
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .inner_margin(egui::Margin::symmetric(5, 2))
+                    .corner_radius(3u8)
+                    .show(ui, |ui: &mut egui::Ui| {
+                        ui.hyperlink_to(
+                            "Docs",
+                            "https://projects.astec.ac.uk/CLARAManual/index.php/Charge",
+                        );
+                    });
             });
             controls::draw_global_controls(
                 ui,
@@ -415,6 +439,7 @@ impl eframe::App for ChargeOverviewApp {
                 &self.charts,
                 &mut self.y_axis,
                 self.reset_progress,
+                self.auto_gain,
             );
         });
 
@@ -529,8 +554,10 @@ impl eframe::App for ChargeOverviewApp {
             self.charts.iter().map(|c| (c.name.as_str(), c)).collect();
         egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
             egui::ScrollArea::vertical().show(ui, |ui: &mut egui::Ui| {
-                // Ordered, filtered charts to render.
-                let visible_charts: Vec<&DeviceChart> = self
+                // Ordered, filtered charts to render, with the saturation limit for
+                // each device's current sensitivity (None disables the warning) and
+                // the peak-window alignment flag.
+                let visible_charts: Vec<(&DeviceChart, Option<f64>, bool)> = self
                     .device_order
                     .iter()
                     .filter_map(|name| {
@@ -538,7 +565,12 @@ impl eframe::App for ChargeOverviewApp {
                         if !self.filter.is_visible(device) {
                             return None;
                         }
-                        chart_by_name.get(name.as_str()).copied()
+                        let chart = chart_by_name.get(name.as_str()).copied()?;
+                        let limit = device
+                            .saturation_charges
+                            .get(device.current_sensitivity)
+                            .copied();
+                        Some((chart, limit, device.peak_misaligned))
                     })
                     .collect();
 
@@ -548,7 +580,7 @@ impl eframe::App for ChargeOverviewApp {
                     let avail = ui.available_height();
                     (avail / visible_charts.len() as f32).clamp(CHART_HEIGHT_MIN, CHART_HEIGHT_MAX)
                 };
-                for chart in &visible_charts {
+                for (chart, saturation_limit, peak_misaligned) in &visible_charts {
                     let stats_override = self
                         .frozen_stats
                         .as_ref()
@@ -559,6 +591,8 @@ impl eframe::App for ChargeOverviewApp {
                         chart_height,
                         stats_override,
                         &self.y_axis.scale,
+                        *saturation_limit,
+                        *peak_misaligned,
                     );
                     ui.add_space(4.0);
                 }
