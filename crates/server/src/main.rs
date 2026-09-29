@@ -1,4 +1,5 @@
 mod audit;
+mod calibration;
 mod commands;
 mod config;
 mod consts;
@@ -48,7 +49,9 @@ async fn main() -> anyhow::Result<()> {
     let network_path = PathBuf::from(
         std::env::var("NETWORK_CONFIG").unwrap_or_else(|_| "config/network.yaml".into()),
     );
-    let state_path = PathBuf::from("state.json");
+    // Mount a volume at this path in Docker, or applied calibrations die with the container.
+    let state_path =
+        PathBuf::from(std::env::var("STATE_FILE").unwrap_or_else(|_| "state.json".into()));
     let virtual_mode = std::env::var("VIRTUAL").map(|v| v == "1").unwrap_or(false);
 
     let device_configs = config::load_device_configs(&config_path)?;
@@ -79,6 +82,9 @@ async fn main() -> anyhow::Result<()> {
                 last_data_time: 0.0,
                 calibration_mismatch: false,
                 peak_misaligned: false,
+                calibrating: false,
+                cancel_calibration: false,
+                calibration_overrides: Default::default(),
             }
         })
         .collect();
@@ -88,6 +94,14 @@ async fn main() -> anyhow::Result<()> {
 
     let mut inner = InnerState::new(devices, buffer_size, device_order);
     inner.auto_gain = persisted.auto_gain;
+    for (name, values) in &persisted.calibrations {
+        if let Some(d) = inner.device_mut(name) {
+            d.calibration_overrides = values
+                .iter()
+                .map(|v| (v.sensitivity, (v.corr_a, v.corr_b)))
+                .collect();
+        }
+    }
     let app_state: AppState = Arc::new(RwLock::new(inner));
 
     // Start EPICS subscriptions
@@ -222,6 +236,12 @@ async fn main() -> anyhow::Result<()> {
                     .collect(),
                 device_order: s.device_order.clone(),
                 auto_gain: s.auto_gain,
+                calibrations: s
+                    .devices
+                    .iter()
+                    .filter(|d| !d.calibration_overrides.is_empty())
+                    .map(|d| (d.name.clone(), d.overrides_vec()))
+                    .collect(),
             };
             drop(s);
             p.save(&state_path_clone);
@@ -316,7 +336,30 @@ mod tests {
             last_data_time: 0.0,
             calibration_mismatch: false,
             peak_misaligned: false,
+            calibrating: false,
+            cancel_calibration: false,
+            calibration_overrides: Default::default(),
         }
+    }
+
+    #[test]
+    fn applied_calibration_overrides_config_corr_only() {
+        use shared::config::DefaultValue;
+        let mut d = device("FCUP");
+        d.config.sensitivities = vec![0, 1];
+        d.config.defaults = [
+            ("corrA".into(), DefaultValue::Array(vec![-1.0, -2.0])),
+            ("corrB".into(), DefaultValue::Array(vec![0.0, 0.0])),
+            ("peak_low".into(), DefaultValue::Scalar(1040.0)),
+        ]
+        .into_iter()
+        .collect();
+        d.calibration_overrides.insert(1, (-2.5, -0.5)); // FB1 = index 1
+        assert_eq!(d.default_value("corrA", 0), Some(-1.0));
+        assert_eq!(d.default_value("corrA", 1), Some(-2.5));
+        assert_eq!(d.default_value("corrB", 1), Some(-0.5));
+        assert_eq!(d.default_value("peak_low", 1), Some(1040.0));
+        assert_eq!(d.default_value("missing", 1), None);
     }
 
     #[test]

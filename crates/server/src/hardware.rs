@@ -126,6 +126,81 @@ pub async fn clear_calibration(ip: &str, level: u8) -> anyhow::Result<()> {
     }
 }
 
+/// Put a front-end into calibration mode: `io.input = CAL`, the given cal reference and
+/// DAC level, and integrator `FB{fb}`. Input goes first because the box rejects
+/// `calibration.*` writes while in EXT (the CAL-mode gate). The integrator goes last
+/// because the firmware only applies a `calibration/level` write on the box's *next*
+/// settings write (measured on FED, 2026-09-29).
+pub async fn set_calibration(ip: &str, fb: u8, reference: &str, level: u8) -> anyhow::Result<()> {
+    if ip.is_empty() {
+        anyhow::bail!("No IP address configured for device");
+    }
+    match detect_api(ip).await {
+        FrontEndApi::Http => {
+            let client = client()?;
+            let base = base_url(ip);
+            post_field(&client, &base, "io/input", &"CAL").await?;
+            post_field(&client, &base, "calibration/reference", &reference).await?;
+            post_field(&client, &base, "calibration/level", &level).await?;
+            post_field(&client, &base, "integrator", &format!("FB{fb}")).await
+        }
+        FrontEndApi::Legacy => {
+            let mut settings = legacy::settings_for_sensitivity(fb);
+            settings.io.input = "CAL".to_string();
+            settings.calibration.reference = reference.to_string();
+            settings.calibration.level = level.into();
+            legacy::send_settings(ip, &settings).await
+        }
+    }
+}
+
+/// The box's full `Settings`, for restoring after a calibration sweep. `None` for a
+/// legacy box, which has no read-back.
+pub async fn read_settings(ip: &str) -> anyhow::Result<Option<serde_json::Value>> {
+    match detect_api(ip).await {
+        FrontEndApi::Http => Ok(Some(
+            client()?
+                .get(format!("{}/settings", base_url(ip)))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?,
+        )),
+        FrontEndApi::Legacy => Ok(None),
+    }
+}
+
+/// Put back the calibration reference/level, integrator and input from a [`read_settings`]
+/// snapshot. CAL first (the gate), then the cal fields; the integrator write after the
+/// level also latches it (the firmware applies a level on the *next* write), and the input
+/// goes last.
+pub async fn restore_settings(ip: &str, saved: &serde_json::Value) -> anyhow::Result<()> {
+    let field = |path: &[&str]| {
+        path.iter()
+            .try_fold(saved, |v, k| v.get(k))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("saved settings lack {}", path.join(".")))
+    };
+    let writes = [
+        ("io/input", serde_json::json!("CAL")),
+        (
+            "calibration/reference",
+            field(&["calibration", "reference"])?,
+        ),
+        ("calibration/level", field(&["calibration", "level"])?),
+        ("integrator", field(&["integrator"])?),
+        ("io/input", field(&["io", "input"])?),
+    ];
+    let client = client()?;
+    let base = base_url(ip);
+    for (path, value) in &writes {
+        post_field(&client, &base, path, value).await?;
+    }
+    info!("Restored front-end {ip} settings");
+    Ok(())
+}
+
 /// Set the box's `meta.device_name` to `name`, but only if it has none set yet.
 ///
 /// There is no per-field endpoint for `meta` (unlike integrator/io), so this reads the

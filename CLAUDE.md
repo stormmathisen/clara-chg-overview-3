@@ -83,6 +83,14 @@ Three crates (`crates/`):
   and reconciles `peak_misaligned` (in `DeviceStatus`, pushed via `PeakAlignment` +
   warning notification). A trace with no significant pulse (beam off — peak < 7
   robust-σ above the baseline) is not judged; the check retries each poll.
+- **Calibration sweep (FCUP):** `calibration.rs` spawns one task per requested cup. It
+  snapshots the front end, then steps the cal DAC 0–255 per sensitivity until saturation,
+  sending `CalibrationProgress` and then `CalibrationResult` with per-level mean ± σ. It
+  restores the snapshot afterwards (also on `CancelCalibration`). `calibrating` mutes fe_events
+  and auto gain meanwhile. The UI fits corrA/corrB with `shared::calibration`;
+  `ApplyCalibration` stores per-FB overrides (persisted) that `DeviceState::default_value`
+  prefers over the config. Note: the fe-2 firmware applies a `calibration/level` write only
+  on the *next* settings write.
 - **Watchdog:** marks a device disconnected after `WATCHDOG_STALE_SECS` (60s) with no data.
 - **Front-end ping:** every 30s, TCP-connects to each device `ip:56000` to set `fe_alive`.
 - **Persistence:** every 30s, `state.json` is written atomically (temp + rename). Holds
@@ -157,7 +165,8 @@ or external IOC required. It sets process-wide env, so don't run another CA test
 - `config/network.yaml` provides EPICS CA env vars for two networks (`PHYSICAL` / `VIRTUAL`).
   `apply_epics_env` sets them as process env before the client starts.
 - **`VIRTUAL=1`** selects the virtual network config (test/sim); default is physical.
-- Other env: `PORT` (49195), `CHARGE_CONFIG`, `NETWORK_CONFIG`, `FRONTEND_DIR`, `AUDIT_LOG`.
+- Other env: `PORT` (49195), `CHARGE_CONFIG`, `NETWORK_CONFIG`, `FRONTEND_DIR`, `AUDIT_LOG`, `STATE_FILE`
+  (default `state.json`; mount a volume in Docker so applied calibrations survive redeploys).
 
 ## Porting context
 

@@ -71,8 +71,8 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
             let defaults: std::collections::HashMap<String, f64> = d
                 .config
                 .defaults
-                .iter()
-                .map(|(k, v)| (k.clone(), v.for_sensitivity(d.current_sensitivity)))
+                .keys()
+                .filter_map(|k| Some((k.clone(), d.default_value(k, d.current_sensitivity)?)))
                 .collect();
             DeviceStatus {
                 name: d.name.clone(),
@@ -87,6 +87,7 @@ pub fn build_init_message(state: &InnerState) -> ServerMessage {
                 defaults,
                 calibration_mismatch: d.calibration_mismatch,
                 peak_misaligned: d.peak_misaligned,
+                calibration_overrides: d.overrides_vec(),
             }
         })
         .collect();
