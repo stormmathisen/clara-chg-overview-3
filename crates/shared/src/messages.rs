@@ -62,6 +62,9 @@ pub struct DeviceStatus {
     /// digitizer signal (checked on boot and when the window PVs change).
     #[serde(default)]
     pub peak_misaligned: bool,
+    /// Calibrations applied from sweeps, overriding the config's corrA/corrB.
+    #[serde(default)]
+    pub calibration_overrides: Vec<CalibrationValue>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,6 +92,48 @@ pub enum NotificationLevel {
     Success,
     Warning,
     Error,
+}
+
+/// One DAC level measured during a calibration sweep, for plotting the fit.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CalibrationLevel {
+    pub level: u8,
+    /// Nominal injected charge (pC).
+    pub charge: f64,
+    /// Mean baseline→min amplitude over the shots (ADC counts, negative for a pulse).
+    pub mean: f64,
+    /// Sample standard deviation of the amplitude (0 for a single shot).
+    pub sigma: f64,
+    /// Whether this level went into the fit (false: no pulse, saturated, or the level
+    /// just before saturation).
+    pub used: bool,
+}
+
+/// Result of a calibration sweep for one sensitivity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CalibrationPoint {
+    /// Integrator level (the `N` in `FBN`).
+    pub sensitivity: u8,
+    /// Calibration reference used, e.g. `"REF500mV"`.
+    pub reference: String,
+    /// `corrA`/`corrB` in use for this sensitivity when the sweep ran (an applied
+    /// calibration, else the config).
+    pub corr_a_old: Option<f64>,
+    pub corr_b_old: Option<f64>,
+    /// First level at which the waveform saturated, if the sweep reached saturation.
+    pub saturated_at: Option<u8>,
+    /// Why this range failed, if it did.
+    pub error: Option<String>,
+    /// Every level measured, in sweep order.
+    pub levels: Vec<CalibrationLevel>,
+}
+
+/// Calibration constants for one sensitivity (`corrB` is subtracted by the IOC).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct CalibrationValue {
+    pub sensitivity: u8,
+    pub corr_a: f64,
+    pub corr_b: f64,
 }
 
 /// Messages from server to client via WebSocket
@@ -135,6 +180,23 @@ pub enum ServerMessage {
         remaining_secs: u32,
         total_secs: u32,
     },
+    /// Calibration sweep progress for one device. `fraction` counts levels, with a range
+    /// that saturates early dropping its remaining levels from the total.
+    CalibrationProgress {
+        device: String,
+        fraction: f32,
+        remaining_secs: f32,
+    },
+    /// A device's applied calibrations changed (empty = config defaults).
+    CalibrationOverrides {
+        device: String,
+        overrides: Vec<CalibrationValue>,
+    },
+    /// A calibration sweep finished (possibly with per-range errors).
+    CalibrationResult {
+        device: String,
+        results: Vec<CalibrationPoint>,
+    },
     /// Notification for the UI
     Notify(Notification),
 }
@@ -154,6 +216,29 @@ pub enum ClientMessage {
         device: String,
     },
     RestoreDefaults {
+        device: String,
+    },
+    /// FCUP only: sweep the calibration DAC at each listed sensitivity index and fit a
+    /// new `corrA`. Answered with `CalibrationResult`.
+    CalibrationSweep {
+        device: String,
+        sensitivities: Vec<usize>,
+        /// DAC levels between measurements.
+        step: u8,
+        /// Shots averaged per level.
+        shots: u8,
+    },
+    /// Stop a running sweep and restore the front end's settings from before it.
+    CancelCalibration {
+        device: String,
+    },
+    /// Use these fitted constants instead of the config's (persisted).
+    ApplyCalibration {
+        device: String,
+        values: Vec<CalibrationValue>,
+    },
+    /// Drop applied calibrations, back to the config's corrA/corrB.
+    RestoreDefaultCalibration {
         device: String,
     },
     ClearCalibration,
@@ -236,6 +321,11 @@ mod tests {
                 defaults: HashMap::new(),
                 calibration_mismatch: true,
                 peak_misaligned: true,
+                calibration_overrides: vec![CalibrationValue {
+                    sensitivity: 0,
+                    corr_a: -1.5e-4,
+                    corr_b: -0.5,
+                }],
             }],
             buffer_size: 1000,
             device_order: vec!["TEST-DEV".to_string()],
@@ -257,6 +347,7 @@ mod tests {
             assert_eq!(devices[0].last_data_time, 1234567890.0);
             assert!(devices[0].calibration_mismatch);
             assert_eq!(devices[0].saturation_charges, vec![150.0, 300.0]);
+            assert_eq!(devices[0].calibration_overrides[0].corr_b, -0.5);
             assert_eq!(buffer_size, 1000);
             assert_eq!(device_order, vec!["TEST-DEV"]);
             assert_eq!(reset_progress, Some((42, 65)));

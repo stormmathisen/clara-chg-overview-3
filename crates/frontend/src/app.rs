@@ -5,6 +5,7 @@ use shared::messages::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
+use crate::calibration::CalibrationDialog;
 use crate::controls;
 use crate::strip_chart;
 use crate::util::{glyph, hms, notification_color, status_color};
@@ -181,6 +182,7 @@ pub struct ChargeOverviewApp {
     pub y_axis: YAxisState,
     /// Server-side automatic gain switching flag, mirrored from Init/AutoGainChanged.
     pub auto_gain: bool,
+    calibration: CalibrationDialog,
 }
 
 impl ChargeOverviewApp {
@@ -228,6 +230,7 @@ impl ChargeOverviewApp {
             frozen_stats: None,
             y_axis,
             auto_gain: false,
+            calibration: CalibrationDialog::default(),
         }
     }
 
@@ -312,6 +315,22 @@ impl ChargeOverviewApp {
                 } => {
                     self.reset_progress =
                         (remaining_secs > 0).then_some((remaining_secs, total_secs));
+                }
+                ServerMessage::CalibrationResult { device, results } => {
+                    self.calibration.on_result(device, results);
+                }
+                ServerMessage::CalibrationProgress {
+                    device,
+                    fraction,
+                    remaining_secs,
+                } => {
+                    self.calibration
+                        .on_progress(device, fraction, remaining_secs);
+                }
+                ServerMessage::CalibrationOverrides { device, overrides } => {
+                    if let Some(dev) = self.devices.iter_mut().find(|d| d.name == device) {
+                        dev.calibration_overrides = overrides;
+                    }
                 }
                 ServerMessage::Notify(n) => {
                     self.notifications.push_back(NotificationEntry {
@@ -440,6 +459,7 @@ impl eframe::App for ChargeOverviewApp {
                 &mut self.y_axis,
                 self.reset_progress,
                 self.auto_gain,
+                &mut self.calibration.open,
             );
         });
 
@@ -598,6 +618,8 @@ impl eframe::App for ChargeOverviewApp {
                 }
             });
         });
+
+        self.calibration.draw(ctx, &self.devices, &mut out_msgs);
 
         // Send any outgoing messages
         for msg in &out_msgs {

@@ -77,6 +77,41 @@ pub async fn handle_command(
         ClientMessage::RestoreDefaults { device } => {
             handle_restore_defaults(&device, state, broadcaster).await
         }
+        ClientMessage::CalibrationSweep {
+            device,
+            sensitivities,
+            step,
+            shots,
+        } => {
+            crate::calibration::spawn_sweep(
+                device,
+                sensitivities,
+                step,
+                shots,
+                state.clone(),
+                broadcaster.clone(),
+            );
+            Ok(())
+        }
+        ClientMessage::CancelCalibration { device } => {
+            let mut s = state.write().await;
+            match s.device_mut(&device) {
+                Some(d) if d.calibrating => {
+                    d.cancel_calibration = true;
+                    Ok(())
+                }
+                _ => Err(CommandError::for_device(
+                    format!("No calibration sweep running on {device}"),
+                    &device,
+                )),
+            }
+        }
+        ClientMessage::ApplyCalibration { device, values } => {
+            handle_apply_calibration(&device, Some(values), state, broadcaster).await
+        }
+        ClientMessage::RestoreDefaultCalibration { device } => {
+            handle_apply_calibration(&device, None, state, broadcaster).await
+        }
         ClientMessage::ClearCalibration => handle_clear_calibration(state, broadcaster).await,
         ClientMessage::ResetFrontEnds => {
             spawn_reset(state.clone(), broadcaster.clone());
@@ -121,7 +156,7 @@ async fn handle_set_sensitivity(
     state: &AppState,
     broadcaster: &Broadcaster,
 ) -> Result<(), CommandError> {
-    let (ip, sensitivity_level, corr_a_pv, corr_a_value, dq_info) = {
+    let (ip, sensitivity_level, corr, dq_info) = {
         let state_read = state.read().await;
         let Some(device) = state_read.device(device_name) else {
             return Err(CommandError::for_device(
@@ -148,12 +183,7 @@ async fn handle_set_sensitivity(
         let level = sensitivities[index];
         let ip = device.config.ip.clone();
 
-        let corr_a_pv = device.config.pvs.get(keys::CORR_A).cloned();
-        let corr_a_value = device
-            .config
-            .defaults
-            .get(keys::CORR_A)
-            .map(|d| d.for_sensitivity(index));
+        let corr = corr_writes(device, index);
 
         // If WCM, also need to set DQcal for the companion :DQ device
         let dq_info = if device.config.device_type == DeviceType::Wcm {
@@ -172,7 +202,7 @@ async fn handle_set_sensitivity(
             None
         };
 
-        (ip, level, corr_a_pv, corr_a_value, dq_info)
+        (ip, level, corr, dq_info)
     };
 
     // Push the integrator to the front-end box over its HTTP API.
@@ -196,12 +226,8 @@ async fn handle_set_sensitivity(
         }
     }
 
-    // Set corrA via EPICS
-    if let (Some(pv), Some(val)) = (corr_a_pv, corr_a_value) {
-        if let Err(e) = epics::caput(&pv, val).await {
-            error!("Failed to caput corrA for {device_name}: {e}");
-        }
-    }
+    // Set corrA (and FCUP corrB) via EPICS
+    put_all(&corr, device_name).await;
 
     // Set DQcal if WCM
     if let Some((Some(pv), Some(val))) = dq_info {
@@ -223,6 +249,104 @@ async fn handle_set_sensitivity(
         broadcaster,
         NotificationLevel::Success,
         format!("Sensitivity set to {sensitivity_level} for {device_name}"),
+        Some(device_name.to_string()),
+    );
+    Ok(())
+}
+
+/// The calibration PV writes for a device at a sensitivity index: corrA, plus corrB for
+/// FCUPs (whose corrB is a per-sensitivity calibration constant — for a WCM it is the
+/// operator's zero offset, which a sensitivity change must not clobber).
+fn corr_writes(device: &crate::state::DeviceState, index: usize) -> Vec<(String, f64)> {
+    let mut keys_to_write = vec![keys::CORR_A];
+    if device.config.device_type == DeviceType::Fcup {
+        keys_to_write.push(keys::CORR_B);
+    }
+    keys_to_write
+        .into_iter()
+        .filter_map(|k| {
+            Some((
+                device.config.pvs.get(k)?.clone(),
+                device.default_value(k, index)?,
+            ))
+        })
+        .collect()
+}
+
+/// Best-effort caputs, logging failures.
+async fn put_all(writes: &[(String, f64)], device_name: &str) {
+    for (pv, val) in writes {
+        if let Err(e) = epics::caput(pv, *val).await {
+            error!("Failed to caput {pv} for {device_name}: {e}");
+        }
+    }
+}
+
+/// Apply sweep calibrations to an FCUP (`Some`), or drop them all back to the config
+/// (`None`). Overrides are persisted with the rest of the state, and the current
+/// sensitivity's corrA/corrB PVs are rewritten straight away.
+async fn handle_apply_calibration(
+    device_name: &str,
+    values: Option<Vec<shared::messages::CalibrationValue>>,
+    state: &AppState,
+    broadcaster: &Broadcaster,
+) -> Result<(), CommandError> {
+    let fail = |m: String| Err(CommandError::for_device(m, device_name));
+    let (writes, overrides, what) = {
+        let mut s = state.write().await;
+        let Some(d) = s.device_mut(device_name) else {
+            return fail(format!("Device {device_name} not found"));
+        };
+        if d.config.device_type != DeviceType::Fcup {
+            return fail(format!("{device_name} is not a Faraday cup"));
+        }
+        let what = match values {
+            Some(values) => {
+                for v in &values {
+                    let valid = d.config.sensitivities.contains(&v.sensitivity)
+                        && v.corr_a.is_finite()
+                        && v.corr_a < 0.0
+                        && v.corr_b.is_finite();
+                    if !valid {
+                        return fail(format!(
+                            "Invalid calibration for {device_name} FB{}: corrA {}, corrB {}",
+                            v.sensitivity, v.corr_a, v.corr_b
+                        ));
+                    }
+                }
+                let fbs: Vec<String> = values
+                    .iter()
+                    .map(|v| format!("FB{}", v.sensitivity))
+                    .collect();
+                for v in values {
+                    d.calibration_overrides
+                        .insert(v.sensitivity, (v.corr_a, v.corr_b));
+                }
+                format!("Applied calibration for {device_name} {}", fbs.join(", "))
+            }
+            None => {
+                d.calibration_overrides.clear();
+                format!("Restored default calibration for {device_name}")
+            }
+        };
+        (
+            corr_writes(d, d.current_sensitivity),
+            d.overrides_vec(),
+            what,
+        )
+    };
+    put_all(&writes, device_name).await;
+    send_message(
+        broadcaster,
+        &ServerMessage::CalibrationOverrides {
+            device: device_name.to_string(),
+            overrides,
+        },
+    );
+    broadcast_notification(
+        broadcaster,
+        NotificationLevel::Success,
+        what,
         Some(device_name.to_string()),
     );
     Ok(())
@@ -451,13 +575,7 @@ async fn handle_sweep_timing(
             ));
         };
         let idx = device.current_sensitivity;
-        let def = |k: &str| {
-            device
-                .config
-                .defaults
-                .get(k)
-                .map(|v| v.for_sensitivity(idx))
-        };
+        let def = |k: &str| device.default_value(k, idx);
 
         // peak_low/peak_high are required for every device type.
         let (Some(peak_low), Some(peak_high)) = (def(keys::PEAK_LOW), def(keys::PEAK_HIGH)) else {
@@ -553,8 +671,7 @@ async fn handle_restore_defaults(
             if key == keys::CHARGE {
                 continue;
             }
-            if let Some(default) = device.config.defaults.get(key) {
-                let val = default.for_sensitivity(sensitivity_index);
+            if let Some(val) = device.default_value(key, sensitivity_index) {
                 result.push((pv_name.clone(), val));
             }
         }
@@ -796,7 +913,7 @@ pub fn spawn_auto_gain(state: AppState, broadcaster: Broadcaster) {
                 s.devices
                     .iter()
                     .filter_map(|d| {
-                        if !d.connected {
+                        if !d.connected || d.calibrating {
                             return None;
                         }
                         let limit = *d.config.saturation_charges.get(d.current_sensitivity)?;

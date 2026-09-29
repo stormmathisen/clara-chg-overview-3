@@ -197,6 +197,42 @@ pub async fn collect_waveforms(
         .map_err(|_| anyhow::anyhow!("timed out collecting {count} waveforms from {pv_name}"))?
 }
 
+/// Subscribe to a waveform PV and forward every update into a channel, for callers that
+/// need shots over a long window (the calibration sweep). The subscription task ends —
+/// dropping its client — on the first update after the receiver is dropped. A monitor
+/// error closes the channel.
+pub async fn waveform_stream(pv_name: &str) -> anyhow::Result<mpsc::UnboundedReceiver<Vec<f64>>> {
+    let mut client = tokio::time::timeout(WRITE_TIMEOUT, Client::new())
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout creating CA client for {pv_name}"))??;
+    let (mut monitor, token) = tokio::time::timeout(WRITE_TIMEOUT, client.subscribe(pv_name))
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout subscribing to {pv_name}"))??;
+    let (tx, rx) = mpsc::unbounded_channel();
+    let pv = pv_name.to_string();
+    tokio::spawn(async move {
+        let _keep = (client, token);
+        loop {
+            match monitor.recv().await {
+                Ok(dbr) => {
+                    if let Some(arr) = extract_f64_array(dbr.value()) {
+                        if tx.send(arr).is_err() {
+                            return;
+                        }
+                    }
+                }
+                // A slow consumer only loses stale shots; keep going.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(e) => {
+                    warn!("[{pv}] waveform stream ended: {e}");
+                    return;
+                }
+            }
+        }
+    });
+    Ok(rx)
+}
+
 /// Read a PV's current value by subscribing and taking the first numeric monitor
 /// event (CA sends the current value on subscribe) — the poor man's caget. Builds a
 /// throwaway client, so this is for occasional polls, not hot paths.

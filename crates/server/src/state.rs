@@ -174,6 +174,50 @@ pub struct DeviceState {
     /// Set by the peak-alignment checker when the configured peak window does not
     /// bracket the actual digitizer peak. Transient (re-checked on boot).
     pub peak_misaligned: bool,
+    /// True while a calibration sweep drives this device's front end. Its integrator and
+    /// charge are not the operator's, so fe_events and auto gain leave it alone.
+    pub calibrating: bool,
+    /// Set by an operator's cancel; the running sweep stops at its next level.
+    pub cancel_calibration: bool,
+    /// Calibrations applied from sweeps: FB level -> (corrA, corrB). Persisted. They take
+    /// precedence over the config's corrA/corrB via [`DeviceState::default_value`].
+    pub calibration_overrides: std::collections::BTreeMap<u8, (f64, f64)>,
+}
+
+impl DeviceState {
+    /// Value of a `defaults` key at a sensitivity index: an applied calibration for
+    /// corrA/corrB, else the config.
+    pub fn default_value(&self, key: &str, index: usize) -> Option<f64> {
+        use crate::commands::keys;
+        let applied = self
+            .config
+            .sensitivities
+            .get(index)
+            .and_then(|fb| self.calibration_overrides.get(fb));
+        match (key, applied) {
+            (keys::CORR_A, Some(&(a, _))) => Some(a),
+            (keys::CORR_B, Some(&(_, b))) => Some(b),
+            _ => self
+                .config
+                .defaults
+                .get(key)
+                .map(|v| v.for_sensitivity(index)),
+        }
+    }
+
+    /// Applied calibrations in wire form.
+    pub fn overrides_vec(&self) -> Vec<shared::messages::CalibrationValue> {
+        self.calibration_overrides
+            .iter()
+            .map(
+                |(&sensitivity, &(corr_a, corr_b))| shared::messages::CalibrationValue {
+                    sensitivity,
+                    corr_a,
+                    corr_b,
+                },
+            )
+            .collect()
+    }
 }
 
 /// Global application state, shared across all tasks
@@ -238,6 +282,9 @@ pub struct PersistedState {
     pub device_order: Vec<String>,
     #[serde(default)]
     pub auto_gain: bool,
+    /// Device name -> calibrations applied from sweeps.
+    #[serde(default)]
+    pub calibrations: std::collections::HashMap<String, Vec<shared::messages::CalibrationValue>>,
 }
 
 impl PersistedState {
@@ -274,6 +321,7 @@ impl PersistedState {
             sensitivities: std::collections::HashMap::new(),
             device_order: Vec::new(),
             auto_gain: false,
+            calibrations: std::collections::HashMap::new(),
         }
     }
 }
@@ -447,6 +495,16 @@ mod tests {
             sensitivities: [("dev1".to_string(), 2)].into_iter().collect(),
             device_order: vec!["dev1".to_string(), "dev2".to_string()],
             auto_gain: true,
+            calibrations: [(
+                "dev1".to_string(),
+                vec![shared::messages::CalibrationValue {
+                    sensitivity: 0,
+                    corr_a: -1.5e-4,
+                    corr_b: -0.5,
+                }],
+            )]
+            .into_iter()
+            .collect(),
         };
         state.save(&path);
 
@@ -455,6 +513,7 @@ mod tests {
         assert_eq!(loaded.sensitivities.get("dev1"), Some(&2));
         assert_eq!(loaded.device_order, vec!["dev1", "dev2"]);
         assert!(loaded.auto_gain);
+        assert_eq!(loaded.calibrations["dev1"][0].corr_b, -0.5);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

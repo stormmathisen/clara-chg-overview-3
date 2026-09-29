@@ -1,4 +1,5 @@
 mod app;
+mod calibration;
 mod controls;
 mod strip_chart;
 mod util;

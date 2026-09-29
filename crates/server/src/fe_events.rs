@@ -113,6 +113,10 @@ async fn handle_settings(
         let Some(device) = s.devices.get_mut(device_index) else {
             return;
         };
+        // A calibration sweep is stepping the integrator itself; not an external change.
+        if device.calibrating {
+            return;
+        }
         // Map the FB level back to an index in this device's sensitivities array.
         let Some(index) = device.config.sensitivities.iter().position(|&v| v == fb) else {
             warn!(

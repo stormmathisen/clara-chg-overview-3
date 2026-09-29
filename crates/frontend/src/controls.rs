@@ -256,6 +256,7 @@ pub fn draw_global_controls(
     y_axis: &mut YAxisState,
     reset_progress: Option<(u32, u32)>,
     auto_gain: bool,
+    calibration_open: &mut bool,
 ) {
     let YAxisState {
         scale: y_scale,
@@ -265,6 +266,13 @@ pub fn draw_global_controls(
     ui.horizontal(|ui: &mut egui::Ui| {
         if ui.button("Clear Calibration (All)").clicked() {
             out_msgs.push(ClientMessage::ClearCalibration);
+        }
+        if ui
+            .button("Calibrate")
+            .on_hover_text("Run a calibration sweep on Faraday cups to derive new corrA")
+            .clicked()
+        {
+            *calibration_open = true;
         }
         // While a reset runs the button becomes its own progress bar, so there is nothing
         // left to click twice.
